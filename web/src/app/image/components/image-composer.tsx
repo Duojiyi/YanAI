@@ -622,6 +622,10 @@ function getPromptItemKey(item: PromptPickerItem, index = 0) {
   return item.id || `${item.title}-${item.created || item.prompt.slice(0, 32)}-${index}`;
 }
 
+function getPromptIdentityKey(item: PromptPickerItem) {
+  return item.id || `${item.title}-${item.prompt}`;
+}
+
 function getPromptSortOrder(item: PromptPickerItem, index: number) {
   return typeof item.sort_order === "number" ? item.sort_order : 10000 + index;
 }
@@ -629,15 +633,27 @@ function getPromptSortOrder(item: PromptPickerItem, index: number) {
 function mergePromptItems(primaryItems: PromptPickerItem[], secondaryItems: PromptPickerItem[]) {
   const secondaryById = new Map(secondaryItems.filter((item) => item.id).map((item) => [item.id, item]));
   const merged = primaryItems.map((item) => (item.id && secondaryById.has(item.id) ? secondaryById.get(item.id)! : item));
-  const seen = new Set(merged.map((item, index) => getPromptItemKey(item, index)));
-  secondaryItems.forEach((item, index) => {
-    const key = getPromptItemKey(item, index);
+  const seen = new Set(merged.map(getPromptIdentityKey));
+  secondaryItems.forEach((item) => {
+    const key = getPromptIdentityKey(item);
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(item);
     }
   });
   return merged;
+}
+
+function uniquePromptItems(items: PromptPickerItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = getPromptIdentityKey(item);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function sortPromptItems(items: PromptPickerItem[]) {
@@ -747,10 +763,9 @@ export function ImageComposer({
       .slice(0, QUICK_PROMPT_COUNT - selected.length);
     return [...selected, ...fallbackItems];
   }, [bananaPrompts]);
-  const quickPromptKeys = useMemo(() => new Set(quickPromptItems.map((item, index) => getPromptItemKey(item, index))), [quickPromptItems]);
   const morePromptItems = useMemo(
-    () => bananaPrompts.filter((item, index) => !quickPromptKeys.has(getPromptItemKey(item, index))),
-    [bananaPrompts, quickPromptKeys],
+    () => uniquePromptItems([...quickPromptItems, ...bananaPrompts]),
+    [bananaPrompts, quickPromptItems],
   );
   const activePresetId = quickPromptItems.find((item) => item.prompt === prompt)?.id;
   const bananaPromptCategories = useMemo(() => {
@@ -965,7 +980,7 @@ export function ImageComposer({
                 <div className="min-w-0">
                   <DialogTitle className="text-xl font-semibold text-stone-950">更多提示词</DialogTitle>
                   <DialogDescription className="mt-2 leading-6 text-stone-500">
-                    来自提示词管理{morePromptItems.length > 0 ? `，已加载 ${morePromptItems.length} 条` : ""}
+                    包含当前三个快捷提示词{morePromptItems.length > 0 ? `，已加载 ${morePromptItems.length} 条` : ""}
                     ，点击使用会填入提示词并自动切换文生图或图生图模式。
                   </DialogDescription>
                 </div>

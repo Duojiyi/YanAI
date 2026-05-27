@@ -193,6 +193,48 @@ class AuthServiceTests(unittest.TestCase):
             self.assertIsNone(service.authenticate(session_token))
             self.assertFalse(service.delete_user(str(user["id"])))
 
+    def test_delete_users_removes_multiple_users_and_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            alice, alice_token = service.create_user(
+                email="alice@example.com",
+                password="secret-123",
+                name="Alice",
+                quota=3,
+            )
+            bob, bob_token = service.create_user(
+                email="bob@example.com",
+                password="secret-123",
+                name="Bob",
+                quota=3,
+            )
+            carol, carol_token = service.create_user(
+                email="carol@example.com",
+                password="secret-123",
+                name="Carol",
+                quota=3,
+            )
+
+            removed = service.delete_users([str(alice["id"]), str(bob["id"]), str(alice["id"])])
+
+            self.assertEqual(removed, 2)
+            self.assertEqual([item["email"] for item in service.list_users()], ["carol@example.com"])
+            self.assertIsNone(service.authenticate(alice_token))
+            self.assertIsNone(service.authenticate(bob_token))
+            self.assertIsNotNone(service.authenticate(carol_token))
+            self.assertEqual(service.delete_users(["missing"]), 0)
+
+    def test_delete_redeem_codes_removes_multiple_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            codes = service.create_redeem_codes(quota=5, count=3)
+
+            removed = service.delete_redeem_codes([str(codes[0]["id"]), str(codes[1]["id"]), str(codes[0]["id"])])
+
+            self.assertEqual(removed, 2)
+            self.assertEqual([item["id"] for item in service.list_redeem_codes()], [codes[2]["id"]])
+            self.assertEqual(service.delete_redeem_codes(["missing"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

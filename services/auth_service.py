@@ -566,6 +566,30 @@ class AuthService:
             self._save_sessions()
             return True
 
+    def delete_users(self, user_ids: list[str]) -> int:
+        normalized_ids = {self._clean(user_id) for user_id in user_ids}
+        normalized_ids.discard("")
+        if not normalized_ids:
+            return 0
+        with self._lock:
+            before = len(self._users)
+            self._users = [
+                user
+                for user in self._users
+                if self._clean(user.get("id")) not in normalized_ids
+            ]
+            removed = before - len(self._users)
+            if removed <= 0:
+                return 0
+            self._sessions = [
+                session
+                for session in self._sessions
+                if self._clean(session.get("user_id")) not in normalized_ids
+            ]
+            self._save_users()
+            self._save_sessions()
+            return removed
+
     def reset_password(self, user_id: str, password: str | None = None) -> tuple[dict[str, object], str] | None:
         next_password = str(password or "").strip() or secrets.token_urlsafe(10)
         if len(next_password) < 6:
@@ -762,6 +786,24 @@ class AuthService:
                 self._save_redeem_codes()
                 return dict(normalized)
         return None
+
+    def delete_redeem_codes(self, code_ids: list[str]) -> int:
+        normalized_ids = {self._clean(code_id) for code_id in code_ids}
+        normalized_ids.discard("")
+        if not normalized_ids:
+            return 0
+        with self._lock:
+            before = len(self._redeem_codes)
+            self._redeem_codes = [
+                item
+                for item in self._redeem_codes
+                if self._clean(item.get("id")) not in normalized_ids
+            ]
+            removed = before - len(self._redeem_codes)
+            if removed <= 0:
+                return 0
+            self._save_redeem_codes()
+            return removed
 
     def redeem_code(self, user_id: str, raw_code: str) -> tuple[dict[str, object], dict[str, object]]:
         code = self._clean(raw_code).upper()

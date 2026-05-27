@@ -58,6 +58,10 @@ class ResetPasswordRequest(BaseModel):
     password: str = ""
 
 
+class IdsDeleteRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
 class RedeemCodeCreateRequest(BaseModel):
     quota: int = Field(default=1, ge=1)
     count: int = Field(default=1, ge=1, le=500)
@@ -276,6 +280,16 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=404, detail={"error": "user not found"})
         return {"items": auth_service.list_users()}
 
+    @router.delete("/api/admin/users")
+    async def admin_delete_users(body: IdsDeleteRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        if not body.ids:
+            raise HTTPException(status_code=400, detail={"error": "ids are required"})
+        removed = auth_service.delete_users(body.ids)
+        if removed <= 0:
+            raise HTTPException(status_code=404, detail={"error": "users not found"})
+        return {"items": auth_service.list_users(), "removed": removed}
+
     @router.post("/api/admin/users/{user_id}/quota")
     async def admin_update_user_quota(user_id: str, body: AdminUserQuotaRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
@@ -334,6 +348,16 @@ def create_router() -> APIRouter:
         if item is None:
             raise HTTPException(status_code=404, detail={"error": "redeem code not found"})
         return {"item": item, "items": auth_service.list_redeem_codes()}
+
+    @router.delete("/api/admin/redeem-codes")
+    async def admin_delete_redeem_codes(body: IdsDeleteRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        if not body.ids:
+            raise HTTPException(status_code=400, detail={"error": "ids are required"})
+        removed = auth_service.delete_redeem_codes(body.ids)
+        if removed <= 0:
+            raise HTTPException(status_code=404, detail={"error": "redeem codes not found"})
+        return {"items": auth_service.list_redeem_codes(), "removed": removed}
 
     @router.get("/api/admin/channels")
     async def admin_list_channels(authorization: str | None = Header(default=None)):

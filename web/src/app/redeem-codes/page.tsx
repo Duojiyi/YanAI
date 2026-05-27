@@ -1,26 +1,46 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Copy, Gift, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, Copy, Gift, LoaderCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { createRedeemCodes, fetchRedeemCodes, updateRedeemCode, type RedeemCode } from "@/lib/api";
+import { createRedeemCodes, deleteRedeemCodes, fetchRedeemCodes, updateRedeemCode, type RedeemCode } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 function RedeemCodesContent() {
   const [items, setItems] = useState<RedeemCode[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<RedeemCode[] | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [form, setForm] = useState({ quota: "10", count: "10", max_uses: "1", expires_at: "", note: "" });
+  const selectedCodes = items.filter((item) => selectedIds.includes(item.id));
+  const allSelected = items.length > 0 && items.every((item) => selectedIds.includes(item.id));
+  const deleteCount = deleteTarget?.length ?? 0;
+  const deleteDescription =
+    deleteCount === 1
+      ? `确认删除兑换码「${deleteTarget?.[0]?.code}」吗？删除后无法再使用。`
+      : `确认删除选中的 ${deleteCount} 个兑换码吗？删除后无法再使用。`;
 
   const load = async () => {
     setIsLoading(true);
     try {
       const data = await fetchRedeemCodes();
       setItems(data.items);
+      setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载兑换码失败");
     } finally {
@@ -42,6 +62,7 @@ function RedeemCodesContent() {
         note: form.note,
       });
       setItems(data.items);
+      setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
       await navigator.clipboard.writeText(data.created.map((item) => item.code).join("\n"));
       toast.success(`已生成 ${data.created.length} 个兑换码，并复制到剪贴板`);
     } catch (error) {
@@ -53,8 +74,41 @@ function RedeemCodesContent() {
     try {
       const data = await updateRedeemCode(item.id, { status: item.status === "enabled" ? "disabled" : "enabled" });
       setItems(data.items);
+      setSelectedIds((current) => current.filter((id) => data.items.some((row) => row.id === id)));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "更新兑换码失败");
+    }
+  };
+
+  const toggleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedIds((current) => Array.from(new Set([...current, ...items.map((item) => item.id)])));
+      return;
+    }
+    setSelectedIds([]);
+  };
+
+  const openDeleteCodes = (codes: RedeemCode[]) => {
+    if (codes.length === 0) {
+      toast.error("请先选择要删除的兑换码");
+      return;
+    }
+    setDeleteTarget(codes);
+  };
+
+  const handleDeleteCodes = async () => {
+    if (!deleteTarget || deleteTarget.length === 0) return;
+    setIsDeleting(true);
+    try {
+      const data = await deleteRedeemCodes(deleteTarget.map((item) => item.id));
+      setItems(data.items);
+      setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
+      setDeleteTarget(null);
+      toast.success(`已删除 ${data.removed} 个兑换码`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "删除兑换码失败");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -92,6 +146,30 @@ function RedeemCodesContent() {
 
       <Card className="overflow-hidden rounded-2xl border-white/80 bg-white/90 shadow-sm">
         <CardContent className="p-0">
+          <div className="flex flex-wrap items-center gap-3 border-b border-rose-50 px-5 py-3">
+            <label className="flex items-center gap-2 text-sm text-stone-500">
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
+                aria-label="选择全部兑换码"
+              />
+              选择全部
+            </label>
+            <Button
+              variant="ghost"
+              className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+              onClick={() => openDeleteCodes(selectedCodes)}
+              disabled={selectedCodes.length === 0 || isDeleting}
+            >
+              {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              删除所选
+            </Button>
+            {selectedCodes.length > 0 ? (
+              <span className="rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
+                已选择 {selectedCodes.length} 项
+              </span>
+            ) : null}
+          </div>
           {isLoading ? (
             <div className="flex h-40 items-center justify-center">
               <LoaderCircle className="size-5 animate-spin text-rose-400" />
@@ -100,7 +178,18 @@ function RedeemCodesContent() {
             <div className="px-6 py-14 text-center text-sm text-stone-500">暂无兑换码</div>
           ) : (
             items.map((item) => (
-              <div key={item.id} className="grid gap-3 border-b border-rose-50 px-5 py-4 text-sm last:border-0 lg:grid-cols-[1.4fr_100px_100px_120px_160px_180px] lg:items-center">
+              <div key={item.id} className="grid gap-3 border-b border-rose-50 px-5 py-4 text-sm last:border-0 lg:grid-cols-[44px_1.4fr_100px_100px_120px_160px_180px] lg:items-center">
+                <Checkbox
+                  checked={selectedIds.includes(item.id)}
+                  onCheckedChange={(checked) => {
+                    setSelectedIds((current) =>
+                      checked
+                        ? Array.from(new Set([...current, item.id]))
+                        : current.filter((id) => id !== item.id),
+                    );
+                  }}
+                  aria-label={`选择兑换码 ${item.code}`}
+                />
                 <div className="flex min-w-0 items-center gap-3">
                   <div className="rounded-2xl bg-rose-50 p-3 text-rose-500">
                     <Gift className="size-4" />
@@ -135,6 +224,27 @@ function RedeemCodesContent() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <div className="mb-1 flex size-10 items-center justify-center rounded-full bg-rose-50 text-rose-500">
+              <AlertTriangle className="size-5" />
+            </div>
+            <DialogTitle>{deleteCount === 1 ? "删除兑换码" : "批量删除兑换码"}</DialogTitle>
+            <DialogDescription>{deleteDescription}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" className="rounded-xl border-stone-200 bg-white" onClick={() => setDeleteTarget(null)} disabled={isDeleting}>
+              取消
+            </Button>
+            <Button variant="destructive" className="rounded-xl" onClick={() => void handleDeleteCodes()} disabled={isDeleting}>
+              {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

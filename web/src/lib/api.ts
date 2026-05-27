@@ -548,6 +548,13 @@ export async function deleteAdminUser(userId: string) {
   });
 }
 
+export async function deleteAdminUsers(userIds: string[]) {
+  return httpRequest<{ items: AdminUser[]; removed: number }>("/api/admin/users", {
+    method: "DELETE",
+    body: { ids: userIds },
+  });
+}
+
 export async function updateAdminUserQuota(userId: string, payload: { amount: number; mode?: "add" | "set" }) {
   return httpRequest<{ item: AdminUser; items: AdminUser[] }>(`/api/admin/users/${userId}/quota`, {
     method: "POST",
@@ -605,6 +612,13 @@ export async function updateRedeemCode(
   return httpRequest<{ item: RedeemCode; items: RedeemCode[] }>(`/api/admin/redeem-codes/${codeId}`, {
     method: "POST",
     body: payload,
+  });
+}
+
+export async function deleteRedeemCodes(codeIds: string[]) {
+  return httpRequest<{ items: RedeemCode[]; removed: number }>("/api/admin/redeem-codes", {
+    method: "DELETE",
+    body: { ids: codeIds },
   });
 }
 

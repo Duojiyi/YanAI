@@ -62,6 +62,14 @@ class ChannelModel(Base):
     data = Column(Text, nullable=False)
 
 
+class PromptLibraryItemModel(Base):
+    __tablename__ = "prompt_library"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(String(255), unique=True, nullable=False, index=True)
+    data = Column(Text, nullable=False)
+
+
 class ImageRecordModel(Base):
     __tablename__ = "image_records"
 
@@ -135,6 +143,12 @@ class DatabaseStorageBackend(StorageBackend):
     def save_channels(self, channels: list[dict[str, Any]]) -> None:
         self._save_rows(ChannelModel, channels, "id", "item_id")
 
+    def load_prompt_library(self) -> list[dict[str, Any]]:
+        return self._load_rows(PromptLibraryItemModel)
+
+    def save_prompt_library(self, prompts: list[dict[str, Any]]) -> None:
+        self._save_rows(PromptLibraryItemModel, prompts, "id", "item_id")
+
     def load_image_records(self) -> list[dict[str, Any]]:
         return self._load_rows(ImageRecordModel)
 
@@ -202,6 +216,7 @@ class DatabaseStorageBackend(StorageBackend):
                     "auth_key_count": auth_key_count,
                     "user_count": session.query(UserModel).count(),
                     "channel_count": session.query(ChannelModel).count(),
+                    "prompt_library_count": session.query(PromptLibraryItemModel).count(),
                     "redeem_code_count": session.query(RedeemCodeModel).count(),
                     "image_record_count": session.query(ImageRecordModel).count(),
                 }

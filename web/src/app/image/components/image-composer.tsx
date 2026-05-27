@@ -29,16 +29,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { fetchPromptLibrary } from "@/lib/api";
 import type { ImageConversationMode } from "@/store/image-conversations";
 import { cn } from "@/lib/utils";
 
-const BANANA_PROMPTS_SNAPSHOT_VERSION = "2026-05-27-full";
-const BANANA_PROMPTS_EXPECTED_COUNT = 323;
+const BANANA_PROMPTS_SNAPSHOT_VERSION = "2026-05-27-sfw";
 const BANANA_PROMPTS_URL = `/banana-prompt-quicker/prompts.json?v=${BANANA_PROMPTS_SNAPSHOT_VERSION}`;
 const BANANA_PROMPTS_REPO_URL = "https://github.com/glidea/banana-prompt-quicker";
 const BANANA_PROMPTS_ASSET_BASE_URL = "/banana-prompt-quicker/";
+const PROMPT_LIBRARY_API_TIMEOUT_MS = 2200;
 
 const GLASSES_PROMPT = `
 不知道自己适合佩戴什么样式的眼镜？
@@ -507,6 +507,7 @@ type BananaPromptItem = {
   reference_image_urls?: string[];
   prompt: string;
   author?: string;
+  id?: string;
   link?: string;
   mode?: string;
   category?: string;
@@ -553,10 +554,6 @@ function getPromptCategoryLabel(item: BananaPromptItem) {
   return [item.category, item.sub_category].filter(Boolean).join(" / ") || "未分类";
 }
 
-function isNsfwCategoryLabel(label: string) {
-  return label.toLowerCase().includes("nsfw");
-}
-
 function isNsfwBananaPrompt(item: BananaPromptItem) {
   return [item.category, item.sub_category, item.title, item.prompt]
     .filter(Boolean)
@@ -594,7 +591,19 @@ function normalizeBananaPromptsPayload(payload: unknown) {
       ? (payload as { prompts: unknown[] }).prompts
       : [];
 
-  return maybeItems.filter(isBananaPromptItem);
+  return maybeItems.filter(isBananaPromptItem).filter((item) => !isNsfwBananaPrompt(item));
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error("提示词管理接口响应超时")), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
 }
 
 function isBananaPromptItem(value: unknown): value is BananaPromptItem {
@@ -669,29 +678,15 @@ export function ImageComposer({
   ];
   const imageSizeLabel = imageSizeOptions.find((option) => option.value === imageSize)?.label || "未指定";
   const activePresetId = promptPresetOptions.find((preset) => preset.prompt === prompt)?.id;
-  const { regular: bananaPromptRegularCategories, nsfw: bananaPromptNsfwCategories } = useMemo(() => {
+  const bananaPromptCategories = useMemo(() => {
     const categories = Array.from(new Set(bananaPrompts.map(getPromptCategoryLabel))).sort((a, b) => a.localeCompare(b, "zh-CN"));
-    return {
-      regular: ["全部", ...categories.filter((category) => !isNsfwCategoryLabel(category))],
-      nsfw: categories.filter(isNsfwCategoryLabel),
-    };
+    return ["全部", ...categories];
   }, [bananaPrompts]);
-  const isNsfwCategorySelected = isNsfwCategoryLabel(bananaPromptCategory);
   const filteredBananaPrompts = useMemo(() => {
     const query = bananaPromptQuery.trim().toLowerCase();
     return bananaPrompts.filter((item) => {
       const categoryLabel = getPromptCategoryLabel(item);
-      const isNsfw = isNsfwBananaPrompt(item);
-      if (isNsfw) {
-        if (!isNsfwCategorySelected) {
-          return false;
-        }
-        const matchesNsfwCategory = bananaPromptCategory === "NSFW" || categoryLabel === bananaPromptCategory;
-        if (!matchesNsfwCategory) {
-          return false;
-        }
-      }
-      const matchesCategory = isNsfw || bananaPromptCategory === "全部" || categoryLabel === bananaPromptCategory;
+      const matchesCategory = bananaPromptCategory === "全部" || categoryLabel === bananaPromptCategory;
       if (!matchesCategory) {
         return false;
       }
@@ -702,7 +697,7 @@ export function ImageComposer({
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query));
     });
-  }, [bananaPromptCategory, bananaPromptQuery, bananaPrompts, isNsfwCategorySelected]);
+  }, [bananaPromptCategory, bananaPromptQuery, bananaPrompts]);
 
   const handlePromptPresetSelect = (preset: ImagePromptPreset) => {
     onModeChange(preset.mode);
@@ -725,7 +720,7 @@ export function ImageComposer({
   };
 
   useEffect(() => {
-    if (!isPromptLibraryOpen || bananaPrompts.length >= BANANA_PROMPTS_EXPECTED_COUNT) {
+    if (!isPromptLibraryOpen || (bananaPromptStatus === "success" && bananaPrompts.length > 0)) {
       return;
     }
 
@@ -734,15 +729,23 @@ export function ImageComposer({
       setBananaPromptStatus("loading");
       setBananaPromptError("");
       try {
-        const response = await fetch(BANANA_PROMPTS_URL, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          throw new Error(`本地资源返回 ${response.status}`);
+        let items: BananaPromptItem[] = [];
+        try {
+          const payload = await withTimeout(fetchPromptLibrary(), PROMPT_LIBRARY_API_TIMEOUT_MS);
+          items = normalizeBananaPromptsPayload(payload);
+        } catch {
+          items = [];
         }
-        const payload = await response.json();
-        const items = normalizeBananaPromptsPayload(payload);
+        if (items.length === 0) {
+          const response = await fetch(BANANA_PROMPTS_URL, {
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (!response.ok) {
+            throw new Error(`本地资源返回 ${response.status}`);
+          }
+          items = normalizeBananaPromptsPayload(await response.json());
+        }
         if (items.length === 0) {
           throw new Error("未读取到可用提示词");
         }
@@ -762,7 +765,7 @@ export function ImageComposer({
     return () => {
       controller.abort();
     };
-  }, [bananaPromptRetryKey, bananaPrompts.length, isPromptLibraryOpen]);
+  }, [bananaPromptRetryKey, bananaPromptStatus, bananaPrompts.length, isPromptLibraryOpen]);
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -922,7 +925,7 @@ export function ImageComposer({
                   />
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {bananaPromptRegularCategories.map((category) => (
+                  {bananaPromptCategories.map((category) => (
                     <button
                       key={category}
                       type="button"
@@ -937,43 +940,6 @@ export function ImageComposer({
                       {category}
                     </button>
                   ))}
-                  {bananaPromptNsfwCategories.length > 0 ? (
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          className={cn(
-                            "inline-flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 text-xs font-medium transition",
-                            isNsfwCategorySelected
-                              ? "border-stone-900 bg-stone-950 text-white"
-                              : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-900",
-                          )}
-                        >
-                          更多
-                          <ChevronDown className="size-3.5" />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-56 rounded-xl p-2">
-                        <div className="grid gap-1">
-                          {bananaPromptNsfwCategories.map((category) => (
-                            <button
-                              key={category}
-                              type="button"
-                              onClick={() => setBananaPromptCategory(category)}
-                              className={cn(
-                                "rounded-lg px-3 py-2 text-left text-xs font-medium transition",
-                                category === bananaPromptCategory
-                                  ? "bg-stone-950 text-white"
-                                  : "text-stone-600 hover:bg-stone-100 hover:text-stone-950",
-                              )}
-                            >
-                              {category}
-                            </button>
-                          ))}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  ) : null}
                 </div>
               </div>
             </DialogHeader>
@@ -983,7 +949,7 @@ export function ImageComposer({
                 <div className="flex h-full min-h-[260px] items-center justify-center">
                   <div className="flex items-center gap-2 text-sm text-stone-500">
                     <LoaderCircle className="size-4 animate-spin" />
-                    正在读取本地提示词库
+                    正在读取 banana-prompt-quicker 提示词库
                   </div>
                 </div>
               ) : bananaPromptStatus === "error" ? (

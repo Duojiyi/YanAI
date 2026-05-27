@@ -46,6 +46,28 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     ...config,
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
     image_retention_days: Number(config.image_retention_days || 30),
+    allow_user_registration: config.allow_user_registration !== false,
+    new_user_initial_quota: Number(config.new_user_initial_quota || 0),
+    email_verification_enabled: Boolean(config.email_verification_enabled),
+    email_domain_whitelist_enabled: Boolean(config.email_domain_whitelist_enabled),
+    email_alias_restriction_enabled: Boolean(config.email_alias_restriction_enabled),
+    email_domain_whitelist: Array.isArray(config.email_domain_whitelist)
+      ? config.email_domain_whitelist.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    smtp_host: typeof config.smtp_host === "string" ? config.smtp_host : "",
+    smtp_port: Number(config.smtp_port || 587),
+    smtp_username: typeof config.smtp_username === "string" ? config.smtp_username : "",
+    smtp_password: "",
+    smtp_password_set: Boolean(config.smtp_password_set),
+    smtp_from_email: typeof config.smtp_from_email === "string" ? config.smtp_from_email : "",
+    smtp_use_ssl: Boolean(config.smtp_use_ssl),
+    smtp_use_starttls: Boolean(config.smtp_use_starttls),
+    smtp_force_auth_login: Boolean(config.smtp_force_auth_login),
+    linuxdo_oauth_enabled: Boolean(config.linuxdo_oauth_enabled),
+    linuxdo_client_id: typeof config.linuxdo_client_id === "string" ? config.linuxdo_client_id : "",
+    linuxdo_client_secret: "",
+    linuxdo_client_secret_set: Boolean(config.linuxdo_client_secret_set),
+    linuxdo_minimum_trust_level: Number(config.linuxdo_minimum_trust_level || 0),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
@@ -114,6 +136,7 @@ type SettingsStore = {
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
   setAutoRemoveRateLimitedAccounts: (value: boolean) => void;
   setLogLevel: (level: string, enabled: boolean) => void;
+  patchConfig: (updates: Partial<SettingsConfig>) => void;
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
   setGptImage2ModelSlug: (value: string) => void;
@@ -217,6 +240,26 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
+        allow_user_registration: config.allow_user_registration !== false,
+        new_user_initial_quota: Math.max(0, Number(config.new_user_initial_quota) || 0),
+        email_verification_enabled: Boolean(config.email_verification_enabled),
+        email_domain_whitelist_enabled: Boolean(config.email_domain_whitelist_enabled),
+        email_alias_restriction_enabled: Boolean(config.email_alias_restriction_enabled),
+        email_domain_whitelist: Array.isArray(config.email_domain_whitelist)
+          ? config.email_domain_whitelist.map((item) => String(item || "").trim()).filter(Boolean)
+          : [],
+        smtp_host: String(config.smtp_host || "").trim(),
+        smtp_port: Math.max(1, Number(config.smtp_port) || 587),
+        smtp_username: String(config.smtp_username || "").trim(),
+        smtp_password: String(config.smtp_password || "").trim(),
+        smtp_from_email: String(config.smtp_from_email || "").trim(),
+        smtp_use_ssl: Boolean(config.smtp_use_ssl),
+        smtp_use_starttls: Boolean(config.smtp_use_starttls),
+        smtp_force_auth_login: Boolean(config.smtp_force_auth_login),
+        linuxdo_oauth_enabled: Boolean(config.linuxdo_oauth_enabled),
+        linuxdo_client_id: String(config.linuxdo_client_id || "").trim(),
+        linuxdo_client_secret: String(config.linuxdo_client_secret || "").trim(),
+        linuxdo_minimum_trust_level: Math.max(0, Math.min(4, Number(config.linuxdo_minimum_trust_level) || 0)),
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
         auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
         proxy: config.proxy.trim(),
@@ -272,6 +315,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       else levels.delete(level);
       return { config: { ...state.config, log_levels: Array.from(levels) } };
     });
+  },
+
+  patchConfig: (updates) => {
+    set((state) => (state.config ? { config: { ...state.config, ...updates } } : {}));
   },
 
   setProxy: (value) => {

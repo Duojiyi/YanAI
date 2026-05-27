@@ -60,6 +60,14 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
+    def load_prompt_library(self) -> list[dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def save_prompt_library(self, prompts: list[dict[str, Any]]) -> None:
+        pass
+
+    @abstractmethod
     def load_image_records(self) -> list[dict[str, Any]]:
         pass
 

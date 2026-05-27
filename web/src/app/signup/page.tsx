@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LoaderCircle, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { registerPersonalUser } from "@/lib/api";
+import webConfig from "@/constants/common-env";
+import { fetchRegisterOptions, registerPersonalUser, sendRegisterVerificationCode, type RegisterOptions } from "@/lib/api";
 import { useRedirectIfAuthenticated } from "@/lib/use-auth-guard";
 import { setStoredAuthSession } from "@/store/auth";
 
@@ -18,13 +19,45 @@ export default function SignupPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [registerOptions, setRegisterOptions] = useState<RegisterOptions | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSendingCode, setIsSendingCode] = useState(false);
   const { isCheckingAuth } = useRedirectIfAuthenticated();
+
+  useEffect(() => {
+    void fetchRegisterOptions()
+      .then(setRegisterOptions)
+      .catch(() => setRegisterOptions(null));
+  }, []);
+
+  const startLinuxDoOAuth = () => {
+    const startPath = registerOptions?.linuxdo_start_url || "/auth/linuxdo/start";
+    const apiBase = webConfig.apiUrl.replace(/\/$/, "");
+    window.location.href = `${apiBase}${startPath}`;
+  };
+
+  const handleSendCode = async () => {
+    setIsSendingCode(true);
+    try {
+      const data = await sendRegisterVerificationCode(email.trim());
+      toast.success(data.required ? "验证码已发送，请检查邮箱" : "当前未启用邮箱验证");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "发送验证码失败");
+    } finally {
+      setIsSendingCode(false);
+    }
+  };
 
   const handleSignup = async () => {
     setIsSubmitting(true);
     try {
-      const data = await registerPersonalUser({ email: email.trim(), password, name: name.trim() });
+      const data = await registerPersonalUser({
+        email: email.trim(),
+        password,
+        name: name.trim(),
+        verification_code: verificationCode.trim(),
+      });
       await setStoredAuthSession({
         key: data.token,
         role: data.user.role,
@@ -66,6 +99,26 @@ export default function SignupPage() {
           <div className="space-y-4">
             <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="昵称" className="h-12 rounded-2xl border-rose-100 bg-white px-4" />
             <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="邮箱" className="h-12 rounded-2xl border-rose-100 bg-white px-4" />
+            {registerOptions?.email_verification_enabled ? (
+              <div className="flex gap-2">
+                <Input
+                  value={verificationCode}
+                  onChange={(event) => setVerificationCode(event.target.value)}
+                  placeholder="邮箱验证码"
+                  className="h-12 min-w-0 flex-1 rounded-2xl border-rose-100 bg-white px-4"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-12 shrink-0 rounded-2xl border-rose-100 bg-white px-4 text-rose-600"
+                  onClick={() => void handleSendCode()}
+                  disabled={isSendingCode}
+                >
+                  {isSendingCode ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                  发送验证码
+                </Button>
+              </div>
+            ) : null}
             <Input
               type="password"
               value={password}
@@ -86,6 +139,17 @@ export default function SignupPage() {
             {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
             注册并登录
           </Button>
+
+          {registerOptions?.linuxdo_oauth_enabled ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12 w-full rounded-2xl border-stone-200 bg-white text-stone-800 hover:bg-stone-50"
+              onClick={startLinuxDoOAuth}
+            >
+              使用 Linux DO 注册 / 登录
+            </Button>
+          ) : null}
 
           <div className="text-center text-sm text-stone-500">
             已有账号？

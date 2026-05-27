@@ -29,6 +29,32 @@ def _is_invalid_auth_key(value: object) -> bool:
     return _normalize_auth_key(value) == ""
 
 
+def _bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _clean_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.replace(";", "\n").replace(",", "\n").splitlines()
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    seen: set[str] = set()
+    items: list[str] = []
+    for item in raw_items:
+        text = str(item or "").strip().lower().lstrip("@")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
+
+
 def _read_json_object(path: Path, *, name: str) -> dict[str, object]:
     if not path.exists():
         return {}
@@ -112,17 +138,11 @@ class ConfigStore:
 
     @property
     def auto_remove_invalid_accounts(self) -> bool:
-        value = self.data.get("auto_remove_invalid_accounts", False)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
+        return _bool(self.data.get("auto_remove_invalid_accounts"), False)
 
     @property
     def auto_remove_rate_limited_accounts(self) -> bool:
-        value = self.data.get("auto_remove_rate_limited_accounts", False)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
+        return _bool(self.data.get("auto_remove_rate_limited_accounts"), False)
 
     @property
     def log_levels(self) -> list[str]:
@@ -134,10 +154,7 @@ class ConfigStore:
 
     @property
     def allow_user_registration(self) -> bool:
-        value = self.data.get("allow_user_registration", True)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
+        return _bool(self.data.get("allow_user_registration"), True)
 
     @property
     def new_user_initial_quota(self) -> int:
@@ -147,8 +164,84 @@ class ConfigStore:
             return 0
 
     @property
+    def email_verification_enabled(self) -> bool:
+        return _bool(self.data.get("email_verification_enabled"), False)
+
+    @property
+    def email_domain_whitelist_enabled(self) -> bool:
+        return _bool(self.data.get("email_domain_whitelist_enabled"), False)
+
+    @property
+    def email_alias_restriction_enabled(self) -> bool:
+        return _bool(self.data.get("email_alias_restriction_enabled"), False)
+
+    @property
+    def email_domain_whitelist(self) -> list[str]:
+        return _clean_list(self.data.get("email_domain_whitelist"))
+
+    @property
+    def smtp_host(self) -> str:
+        return str(os.getenv("CHATGPT2API_SMTP_HOST") or self.data.get("smtp_host") or "").strip()
+
+    @property
+    def smtp_port(self) -> int:
+        try:
+            return max(1, int(os.getenv("CHATGPT2API_SMTP_PORT") or self.data.get("smtp_port") or 587))
+        except (TypeError, ValueError):
+            return 587
+
+    @property
+    def smtp_username(self) -> str:
+        return str(os.getenv("CHATGPT2API_SMTP_USERNAME") or self.data.get("smtp_username") or "").strip()
+
+    @property
+    def smtp_password(self) -> str:
+        return str(os.getenv("CHATGPT2API_SMTP_PASSWORD") or self.data.get("smtp_password") or "").strip()
+
+    @property
+    def smtp_from_email(self) -> str:
+        return str(os.getenv("CHATGPT2API_SMTP_FROM") or self.data.get("smtp_from_email") or self.smtp_username).strip()
+
+    @property
+    def smtp_use_ssl(self) -> bool:
+        return _bool(self.data.get("smtp_use_ssl"), self.smtp_port == 465)
+
+    @property
+    def smtp_use_starttls(self) -> bool:
+        return _bool(self.data.get("smtp_use_starttls"), not self.smtp_use_ssl)
+
+    @property
+    def smtp_force_auth_login(self) -> bool:
+        return _bool(self.data.get("smtp_force_auth_login"), False)
+
+    @property
+    def linuxdo_oauth_enabled(self) -> bool:
+        return _bool(self.data.get("linuxdo_oauth_enabled"), False)
+
+    @property
+    def linuxdo_client_id(self) -> str:
+        return str(os.getenv("LINUX_DO_CLIENT_ID") or self.data.get("linuxdo_client_id") or "").strip()
+
+    @property
+    def linuxdo_client_secret(self) -> str:
+        return str(os.getenv("LINUX_DO_CLIENT_SECRET") or self.data.get("linuxdo_client_secret") or "").strip()
+
+    @property
+    def linuxdo_minimum_trust_level(self) -> int:
+        try:
+            return max(0, min(4, int(self.data.get("linuxdo_minimum_trust_level", 0))))
+        except (TypeError, ValueError):
+            return 0
+
+    @property
     def images_dir(self) -> Path:
         path = DATA_DIR / "images"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def prompt_assets_dir(self) -> Path:
+        path = DATA_DIR / "prompt-assets"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -208,16 +301,42 @@ class ConfigStore:
         data["log_levels"] = self.log_levels
         data["allow_user_registration"] = self.allow_user_registration
         data["new_user_initial_quota"] = self.new_user_initial_quota
+        data["email_verification_enabled"] = self.email_verification_enabled
+        data["email_domain_whitelist_enabled"] = self.email_domain_whitelist_enabled
+        data["email_alias_restriction_enabled"] = self.email_alias_restriction_enabled
+        data["email_domain_whitelist"] = self.email_domain_whitelist
+        data["smtp_host"] = self.smtp_host
+        data["smtp_port"] = self.smtp_port
+        data["smtp_username"] = self.smtp_username
+        data["smtp_from_email"] = self.smtp_from_email
+        data["smtp_use_ssl"] = self.smtp_use_ssl
+        data["smtp_use_starttls"] = self.smtp_use_starttls
+        data["smtp_force_auth_login"] = self.smtp_force_auth_login
+        data["smtp_password_set"] = bool(self.smtp_password)
+        data["linuxdo_oauth_enabled"] = self.linuxdo_oauth_enabled
+        data["linuxdo_client_id"] = self.linuxdo_client_id
+        data["linuxdo_minimum_trust_level"] = self.linuxdo_minimum_trust_level
+        data["linuxdo_client_secret_set"] = bool(self.linuxdo_client_secret)
         data["image_model_mappings"] = self.image_model_mappings
         data.pop("auth-key", None)
+        data.pop("smtp_password", None)
+        data.pop("linuxdo_client_secret", None)
         return data
 
     def get_proxy_settings(self) -> str:
         return str(self.data.get("proxy") or "").strip()
 
     def update(self, data: dict[str, object]) -> dict[str, object]:
+        updates = dict(data or {})
+        for transient_key in ("smtp_password_set", "linuxdo_client_secret_set"):
+            updates.pop(transient_key, None)
+        for secret_key in ("smtp_password", "linuxdo_client_secret"):
+            if secret_key in updates and not str(updates.get(secret_key) or "").strip():
+                updates.pop(secret_key, None)
+        if "email_domain_whitelist" in updates:
+            updates["email_domain_whitelist"] = _clean_list(updates.get("email_domain_whitelist"))
         next_data = dict(self.data)
-        next_data.update(dict(data or {}))
+        next_data.update(updates)
         self.data = next_data
         self._save()
         return self.get()

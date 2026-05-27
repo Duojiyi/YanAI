@@ -1,15 +1,24 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Copy, LoaderCircle, Plus, RefreshCw, Search, UserRound } from "lucide-react";
+import { AlertTriangle, Copy, LoaderCircle, Plus, RefreshCw, Search, Trash2, UserRound } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   createAdminUser,
+  deleteAdminUser,
   fetchAdminUsers,
   resetAdminUserPassword,
   updateAdminUser,
@@ -36,6 +45,8 @@ function UsersPageContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [creating, setCreating] = useState({ email: "", password: "", name: "", quota: "0" });
   const [quotaInputs, setQuotaInputs] = useState<Record<string, string>>({});
+  const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const activeCount = useMemo(() => items.filter((item) => item.status === "active").length, [items]);
   const totalQuota = useMemo(() => items.reduce((sum, item) => sum + Number(item.quota || 0), 0), [items]);
@@ -102,6 +113,21 @@ function UsersPageContent() {
     }
   };
 
+  const handleDeleteUser = async () => {
+    if (!deletingUser) return;
+    setIsDeleting(true);
+    try {
+      const data = await deleteAdminUser(deletingUser.id);
+      setItems(data.items);
+      setDeletingUser(null);
+      toast.success("用户已删除");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "删除用户失败");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <section className="space-y-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -162,7 +188,7 @@ function UsersPageContent() {
 
       <Card className="overflow-hidden rounded-2xl border-white/80 bg-white/90 shadow-sm">
         <CardContent className="p-0">
-          <div className="grid grid-cols-[minmax(220px,1.4fr)_120px_120px_120px_150px_260px] border-b border-rose-50 px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-stone-400">
+          <div className="grid grid-cols-[minmax(220px,1.4fr)_120px_120px_120px_150px_300px] border-b border-rose-50 px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-stone-400">
             <span>用户</span>
             <span>状态</span>
             <span>额度</span>
@@ -178,7 +204,7 @@ function UsersPageContent() {
             <div className="px-6 py-14 text-center text-sm text-stone-500">暂无用户</div>
           ) : (
             items.map((user) => (
-              <div key={user.id} className="grid grid-cols-[minmax(220px,1.4fr)_120px_120px_120px_150px_260px] items-center border-b border-rose-50 px-5 py-4 text-sm last:border-0">
+              <div key={user.id} className="grid grid-cols-[minmax(220px,1.4fr)_120px_120px_120px_150px_300px] items-center border-b border-rose-50 px-5 py-4 text-sm last:border-0">
                 <div className="min-w-0">
                   <div className="truncate font-medium text-stone-900">{user.name}</div>
                   <div className="truncate text-xs text-stone-500">{user.email}</div>
@@ -205,12 +231,45 @@ function UsersPageContent() {
                   <Button variant="ghost" size="icon" className="size-8 text-stone-500" onClick={() => void handleResetPassword(user)}>
                     <Copy className="size-4" />
                   </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 text-rose-500 hover:bg-rose-50"
+                    onClick={() => setDeletingUser(user)}
+                    aria-label="删除用户"
+                    title="删除用户"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
                 </div>
               </div>
             ))
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(deletingUser)} onOpenChange={(open) => !open && setDeletingUser(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <div className="mb-1 flex size-10 items-center justify-center rounded-full bg-rose-50 text-rose-500">
+              <AlertTriangle className="size-5" />
+            </div>
+            <DialogTitle>删除用户</DialogTitle>
+            <DialogDescription>
+              确认删除用户「{deletingUser?.name || deletingUser?.email}」吗？删除后该用户无法继续登录，已有会话会立即失效。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" className="rounded-xl border-stone-200 bg-white" onClick={() => setDeletingUser(null)} disabled={isDeleting}>
+              取消
+            </Button>
+            <Button variant="destructive" className="rounded-xl" onClick={() => void handleDeleteUser()} disabled={isDeleting}>
+              {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

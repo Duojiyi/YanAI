@@ -17,6 +17,7 @@ class JSONStorageBackend(StorageBackend):
         self.sessions_path = file_path.with_name("sessions.json")
         self.redeem_codes_path = file_path.with_name("redeem_codes.json")
         self.channels_path = file_path.with_name("channels.json")
+        self.prompt_library_path = file_path.with_name("prompt_library.json")
         self.image_records_path = file_path.with_name("image_records.json")
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.auth_keys_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +92,12 @@ class JSONStorageBackend(StorageBackend):
     def save_channels(self, channels: list[dict[str, Any]]) -> None:
         self._save_json_list(self.channels_path, channels)
 
+    def load_prompt_library(self) -> list[dict[str, Any]]:
+        return self._load_json_list(self.prompt_library_path)
+
+    def save_prompt_library(self, prompts: list[dict[str, Any]]) -> None:
+        self._save_json_list(self.prompt_library_path, prompts)
+
     def load_image_records(self) -> list[dict[str, Any]]:
         return self._load_json_list(self.image_records_path)
 
@@ -114,6 +121,7 @@ class JSONStorageBackend(StorageBackend):
                 "sessions_file_exists": self.sessions_path.exists(),
                 "redeem_codes_file_exists": self.redeem_codes_path.exists(),
                 "channels_file_exists": self.channels_path.exists(),
+                "prompt_library_file_exists": self.prompt_library_path.exists(),
                 "image_records_file_exists": self.image_records_path.exists(),
             }
         except Exception as e:
@@ -136,5 +144,6 @@ class JSONStorageBackend(StorageBackend):
             "sessions_file_path": str(self.sessions_path),
             "redeem_codes_file_path": str(self.redeem_codes_path),
             "channels_file_path": str(self.channels_path),
+            "prompt_library_file_path": str(self.prompt_library_path),
             "image_records_file_path": str(self.image_records_path),
         }

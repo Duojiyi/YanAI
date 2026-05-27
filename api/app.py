@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api import accounts, ai, register, system, users
+from api import accounts, ai, prompts, register, system, users
 from api.support import resolve_web_asset, start_limited_account_watcher
 from services.config import config
 
@@ -37,11 +37,13 @@ def create_app() -> FastAPI:
     )
     app.include_router(ai.create_router())
     app.include_router(accounts.create_router())
+    app.include_router(prompts.create_router())
     app.include_router(register.create_router())
     app.include_router(users.create_router())
     app.include_router(system.create_router(app_version))
     if config.images_dir.exists():
         app.mount("/images", StaticFiles(directory=str(config.images_dir)), name="images")
+    app.mount("/prompt-assets", StaticFiles(directory=str(config.prompt_assets_dir)), name="prompt-assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_web(full_path: str):

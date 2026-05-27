@@ -175,6 +175,24 @@ class AuthServiceTests(unittest.TestCase):
             self.assertEqual(authed["id"], item["id"])
             self.assertIsNotNone(authed["last_used_at"])
 
+    def test_delete_user_removes_user_and_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            user, session_token = service.create_user(
+                email="alice@example.com",
+                password="secret-123",
+                name="Alice",
+                quota=3,
+            )
+
+            self.assertEqual(len(service.list_users()), 1)
+            self.assertIsNotNone(service.authenticate(session_token))
+
+            self.assertTrue(service.delete_user(str(user["id"])))
+            self.assertEqual(service.list_users(), [])
+            self.assertIsNone(service.authenticate(session_token))
+            self.assertFalse(service.delete_user(str(user["id"])))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,7 @@ class GitStorageBackend(StorageBackend):
         sessions_file_path: str = "sessions.json",
         redeem_codes_file_path: str = "redeem_codes.json",
         channels_file_path: str = "channels.json",
+        prompt_library_file_path: str = "prompt_library.json",
         image_records_file_path: str = "image_records.json",
         local_cache_dir: Path | None = None,
     ):
@@ -38,6 +39,7 @@ class GitStorageBackend(StorageBackend):
         self.sessions_file_path = sessions_file_path
         self.redeem_codes_file_path = redeem_codes_file_path
         self.channels_file_path = channels_file_path
+        self.prompt_library_file_path = prompt_library_file_path
         self.image_records_file_path = image_records_file_path
         
         # 本地缓存目录
@@ -151,6 +153,12 @@ class GitStorageBackend(StorageBackend):
     def save_channels(self, channels: list[dict[str, Any]]) -> None:
         self._save_json_file(self.channels_file_path, channels, "Update channels data")
 
+    def load_prompt_library(self) -> list[dict[str, Any]]:
+        return self._load_json_file(self.prompt_library_file_path)
+
+    def save_prompt_library(self, prompts: list[dict[str, Any]]) -> None:
+        self._save_json_file(self.prompt_library_file_path, prompts, "Update prompt library data")
+
     def load_image_records(self) -> list[dict[str, Any]]:
         return self._load_json_file(self.image_records_file_path)
 
@@ -196,6 +204,7 @@ class GitStorageBackend(StorageBackend):
                 "sessions_file_path": self.sessions_file_path,
                 "redeem_codes_file_path": self.redeem_codes_file_path,
                 "channels_file_path": self.channels_file_path,
+                "prompt_library_file_path": self.prompt_library_file_path,
                 "image_records_file_path": self.image_records_file_path,
                 "last_commit": repo.head.commit.hexsha[:8],
             }
@@ -219,6 +228,7 @@ class GitStorageBackend(StorageBackend):
             "sessions_file_path": self.sessions_file_path,
             "redeem_codes_file_path": self.redeem_codes_file_path,
             "channels_file_path": self.channels_file_path,
+            "prompt_library_file_path": self.prompt_library_file_path,
             "image_records_file_path": self.image_records_file_path,
         }
 

@@ -73,6 +73,26 @@ type AccountUpdateResponse = {
 export type SettingsConfig = {
   proxy: string;
   base_url?: string;
+  allow_user_registration?: boolean;
+  new_user_initial_quota?: number | string;
+  email_verification_enabled?: boolean;
+  email_domain_whitelist_enabled?: boolean;
+  email_alias_restriction_enabled?: boolean;
+  email_domain_whitelist?: string[];
+  smtp_host?: string;
+  smtp_port?: number | string;
+  smtp_username?: string;
+  smtp_password?: string;
+  smtp_password_set?: boolean;
+  smtp_from_email?: string;
+  smtp_use_ssl?: boolean;
+  smtp_use_starttls?: boolean;
+  smtp_force_auth_login?: boolean;
+  linuxdo_oauth_enabled?: boolean;
+  linuxdo_client_id?: string;
+  linuxdo_client_secret?: string;
+  linuxdo_client_secret_set?: boolean;
+  linuxdo_minimum_trust_level?: number | string;
   image_model_mappings?: Record<string, string>;
   refresh_account_interval_minute?: number | string;
   image_retention_days?: number | string;
@@ -88,6 +108,39 @@ export type ManagedImage = {
   size: number;
   url: string;
   created_at: string;
+};
+
+export type PromptLibraryItem = {
+  id: string;
+  title: string;
+  preview?: string;
+  reference_image_urls?: string[];
+  prompt: string;
+  author?: string;
+  link?: string;
+  mode?: "generate" | "edit" | string;
+  category?: string;
+  sub_category?: string;
+  created?: string;
+  updated_at?: string;
+};
+
+export type PromptLibraryPayload = {
+  title: string;
+  preview?: string;
+  reference_image_urls?: string[];
+  prompt: string;
+  author?: string;
+  link?: string;
+  mode?: "generate" | "edit" | string;
+  category?: string;
+  sub_category?: string;
+};
+
+type PromptLibraryResponse = {
+  items: PromptLibraryItem[];
+  prompts: PromptLibraryItem[];
+  prompt_count: number;
 };
 
 export type SystemLog = {
@@ -127,6 +180,18 @@ export type CurrentUser = {
   created_at?: string | null;
   updated_at?: string | null;
   last_login_at?: string | null;
+};
+
+export type RegisterOptions = {
+  allow_user_registration: boolean;
+  email_verification_enabled: boolean;
+  email_domain_whitelist_enabled: boolean;
+  email_alias_restriction_enabled: boolean;
+  email_domain_whitelist: string[];
+  linuxdo_oauth_enabled: boolean;
+  linuxdo_minimum_trust_level: number;
+  linuxdo_start_url: string;
+  linuxdo_callback_url: string;
 };
 
 export type AdminUser = CurrentUser & {
@@ -203,7 +268,21 @@ export async function login(input: string | { email: string; password: string })
   });
 }
 
-export async function registerPersonalUser(payload: { email: string; password: string; name?: string }) {
+export async function fetchRegisterOptions() {
+  return httpRequest<RegisterOptions>("/auth/register/options", {
+    redirectOnUnauthorized: false,
+  });
+}
+
+export async function sendRegisterVerificationCode(email: string) {
+  return httpRequest<{ ok: boolean; required: boolean }>("/auth/register/email-code", {
+    method: "POST",
+    body: { email },
+    redirectOnUnauthorized: false,
+  });
+}
+
+export async function registerPersonalUser(payload: { email: string; password: string; name?: string; verification_code?: string }) {
   return httpRequest<{ ok: boolean; user: CurrentUser; token: string }>("/auth/register", {
     method: "POST",
     body: payload,
@@ -339,6 +418,43 @@ export async function fetchManagedImages(filters: { start_date?: string; end_dat
   );
 }
 
+export async function fetchPromptLibrary() {
+  return httpRequest<PromptLibraryResponse>("/api/prompts");
+}
+
+export async function fetchAdminPrompts() {
+  return httpRequest<PromptLibraryResponse>("/api/admin/prompts");
+}
+
+export async function createAdminPrompt(payload: PromptLibraryPayload) {
+  return httpRequest<{ item: PromptLibraryItem } & PromptLibraryResponse>("/api/admin/prompts", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function updateAdminPrompt(promptId: string, payload: Partial<PromptLibraryPayload>) {
+  return httpRequest<{ item: PromptLibraryItem } & PromptLibraryResponse>(`/api/admin/prompts/${promptId}`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function deleteAdminPrompt(promptId: string) {
+  return httpRequest<PromptLibraryResponse>(`/api/admin/prompts/${promptId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function uploadPromptExampleImage(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return httpRequest<{ url: string }>("/api/admin/prompts/assets", {
+    method: "POST",
+    body: formData,
+  });
+}
+
 export async function fetchMyImages(filters: { start_date?: string; end_date?: string }) {
   const params = new URLSearchParams();
   if (filters.start_date) params.set("start_date", filters.start_date);
@@ -411,6 +527,12 @@ export async function updateAdminUser(
   return httpRequest<{ item: AdminUser; items: AdminUser[] }>(`/api/admin/users/${userId}`, {
     method: "POST",
     body: payload,
+  });
+}
+
+export async function deleteAdminUser(userId: string) {
+  return httpRequest<{ items: AdminUser[] }>(`/api/admin/users/${userId}`, {
+    method: "DELETE",
   });
 }
 

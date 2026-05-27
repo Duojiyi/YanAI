@@ -74,6 +74,33 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(store.image_model_mappings["custom-image"], "gpt-5-3-mini")
             self.assertEqual(store.get()["image_model_mappings"]["codex-gpt-image-2"], "codex-gpt-image-2")
 
+    def test_sensitive_registration_settings_are_not_returned_and_blank_updates_preserve_them(self) -> None:
+        module = self.config_module
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "auth-key": "test-auth",
+                        "smtp_password": "smtp-secret",
+                        "linuxdo_client_secret": "linuxdo-secret",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = module.ConfigStore(config_path)
+
+            public = store.get()
+            self.assertNotIn("smtp_password", public)
+            self.assertNotIn("linuxdo_client_secret", public)
+            self.assertTrue(public["smtp_password_set"])
+            self.assertTrue(public["linuxdo_client_secret_set"])
+
+            store.update({"smtp_password": "", "linuxdo_client_secret": ""})
+
+            self.assertEqual(store.smtp_password, "smtp-secret")
+            self.assertEqual(store.linuxdo_client_secret, "linuxdo-secret")
+
 
 if __name__ == "__main__":
     unittest.main()

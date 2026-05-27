@@ -13,6 +13,7 @@ const adminNavItems = [
   { href: "/users", label: "用户管理" },
   { href: "/accounts", label: "池管理" },
   { href: "/register", label: "注册机" },
+  { href: "/prompt-manager", label: "提示词" },
   { href: "/image-manager", label: "图片管理" },
   { href: "/channels", label: "渠道管理" },
   { href: "/redeem-codes", label: "兑换码" },

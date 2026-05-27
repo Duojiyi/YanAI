@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KeyRound, LoaderCircle, Mail, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { login } from "@/lib/api";
+import webConfig from "@/constants/common-env";
+import { fetchRegisterOptions, login, type RegisterOptions } from "@/lib/api";
 import { useRedirectIfAuthenticated } from "@/lib/use-auth-guard";
 import { getDefaultRouteForRole, setStoredAuthSession } from "@/store/auth";
 import { cn } from "@/lib/utils";
@@ -22,8 +23,21 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authKey, setAuthKey] = useState("");
+  const [registerOptions, setRegisterOptions] = useState<RegisterOptions | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { isCheckingAuth } = useRedirectIfAuthenticated();
+
+  useEffect(() => {
+    void fetchRegisterOptions()
+      .then(setRegisterOptions)
+      .catch(() => setRegisterOptions(null));
+  }, []);
+
+  const startLinuxDoOAuth = () => {
+    const startPath = registerOptions?.linuxdo_start_url || "/auth/linuxdo/start";
+    const apiBase = webConfig.apiUrl.replace(/\/$/, "");
+    window.location.href = `${apiBase}${startPath}`;
+  };
 
   const handleLogin = async () => {
     setIsSubmitting(true);
@@ -140,6 +154,17 @@ export default function LoginPage() {
             {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
             登录
           </Button>
+
+          {mode === "user" && registerOptions?.linuxdo_oauth_enabled ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12 w-full rounded-2xl border-stone-200 bg-white text-stone-800 hover:bg-stone-50"
+              onClick={startLinuxDoOAuth}
+            >
+              使用 Linux DO 登录 / 注册
+            </Button>
+          ) : null}
 
           {mode === "user" ? (
             <div className="text-center text-sm text-stone-500">

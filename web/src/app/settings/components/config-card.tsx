@@ -1,13 +1,15 @@
 "use client";
 
-import { LoaderCircle, PlugZap, Save } from "lucide-react";
-import { useState } from "react";
+import { Copy, LoaderCircle, PlugZap, Save } from "lucide-react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import webConfig from "@/constants/common-env";
 import { testProxy, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
@@ -15,6 +17,7 @@ import { useSettingsStore } from "../store";
 export function ConfigCard() {
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
+  const [whitelistDraft, setWhitelistDraft] = useState("");
   const logLevelOptions = ["debug", "info", "warning", "error"];
   const config = useSettingsStore((state) => state.config);
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
@@ -24,10 +27,42 @@ export function ConfigCard() {
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
+  const patchConfig = useSettingsStore((state) => state.patchConfig);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
   const setGptImage2ModelSlug = useSettingsStore((state) => state.setGptImage2ModelSlug);
   const saveConfig = useSettingsStore((state) => state.saveConfig);
+  const apiBase = webConfig.apiUrl.replace(/\/$/, "") || (typeof window !== "undefined" ? window.location.origin : "");
+  const linuxDoCallbackUrl = `${apiBase}/oauth/linuxdo`;
+  const whitelistText = Array.isArray(config?.email_domain_whitelist) ? config.email_domain_whitelist.join("\n") : "";
+
+  useEffect(() => {
+    setWhitelistDraft(whitelistText);
+  }, [whitelistText]);
+
+  const parseWhitelistDraft = () =>
+    whitelistDraft
+      .split(/[\n,;]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  const syncWhitelistDraft = () => {
+    patchConfig({ email_domain_whitelist: parseWhitelistDraft() });
+  };
+
+  const handleSaveConfig = async () => {
+    syncWhitelistDraft();
+    await saveConfig();
+  };
+
+  const copyLinuxDoCallbackUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(linuxDoCallbackUrl);
+      toast.success("Linux DO 回调地址已复制");
+    } catch {
+      toast.error("复制失败");
+    }
+  };
 
   const handleTestProxy = async () => {
     const candidate = String(config?.proxy || "").trim();
@@ -149,6 +184,27 @@ export function ConfigCard() {
           </div>
           <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
             <Checkbox
+              checked={config?.allow_user_registration !== false}
+              onCheckedChange={(checked) => patchConfig({ allow_user_registration: Boolean(checked) })}
+            />
+            允许用户自行注册
+          </label>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">新用户注册初始额度</label>
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              inputMode="numeric"
+              value={String(config?.new_user_initial_quota ?? "")}
+              onChange={(event) => patchConfig({ new_user_initial_quota: event.target.value })}
+              placeholder="0"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">邮箱注册和 Linux DO 首次登录创建的新用户都会获得该额度。</p>
+          </div>
+          <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
+            <Checkbox
               checked={Boolean(config?.auto_remove_invalid_accounts)}
               onCheckedChange={(checked) => setAutoRemoveInvalidAccounts(Boolean(checked))}
             />
@@ -178,12 +234,131 @@ export function ConfigCard() {
               ))}
             </div>
           </div>
+          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-4 md:col-span-2">
+            <div>
+              <h2 className="text-sm font-semibold text-stone-900">注册邮箱验证</h2>
+              <p className="mt-1 text-xs leading-5 text-stone-500">开启后，邮箱注册必须先通过验证码；域名白名单只影响用户自助注册。</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox
+                  checked={Boolean(config?.email_verification_enabled)}
+                  onCheckedChange={(checked) => patchConfig({ email_verification_enabled: Boolean(checked) })}
+                />
+                启用邮箱验证
+              </label>
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox
+                  checked={Boolean(config?.email_domain_whitelist_enabled)}
+                  onCheckedChange={(checked) => patchConfig({ email_domain_whitelist_enabled: Boolean(checked) })}
+                />
+                启用邮箱域名白名单
+              </label>
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox
+                  checked={Boolean(config?.email_alias_restriction_enabled)}
+                  onCheckedChange={(checked) => patchConfig({ email_alias_restriction_enabled: Boolean(checked) })}
+                />
+                启用邮箱别名限制
+              </label>
+            </div>
+            <Textarea
+              value={whitelistDraft}
+              onChange={(event) => setWhitelistDraft(event.target.value)}
+              onBlur={syncWhitelistDraft}
+              placeholder="每行一个域名，例如 gmail.com 或 *.example.com"
+              className="min-h-24 rounded-xl border-stone-200 bg-stone-50 font-mono text-xs"
+            />
+          </div>
+          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-4 md:col-span-2">
+            <div>
+              <h2 className="text-sm font-semibold text-stone-900">SMTP 邮件发送</h2>
+              <p className="mt-1 text-xs leading-5 text-stone-500">用于发送注册验证码，密码和访问凭证不会回显。</p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">SMTP 服务器地址</label>
+                <Input value={String(config?.smtp_host || "")} onChange={(event) => patchConfig({ smtp_host: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-stone-50" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">SMTP 端口</label>
+                <Input value={String(config?.smtp_port || "")} onChange={(event) => patchConfig({ smtp_port: event.target.value })} placeholder="587" className="h-10 rounded-xl border-stone-200 bg-stone-50" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">SMTP 账户</label>
+                <Input value={String(config?.smtp_username || "")} onChange={(event) => patchConfig({ smtp_username: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-stone-50" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">SMTP 发送者邮箱</label>
+                <Input value={String(config?.smtp_from_email || "")} onChange={(event) => patchConfig({ smtp_from_email: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-stone-50" />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-sm text-stone-700">SMTP 访问凭证</label>
+                <Input
+                  type="password"
+                  value={String(config?.smtp_password || "")}
+                  onChange={(event) => patchConfig({ smtp_password: event.target.value })}
+                  placeholder={config?.smtp_password_set ? "已保存，留空则不修改" : "敏感信息不会发送到前端显示"}
+                  className="h-10 rounded-xl border-stone-200 bg-stone-50"
+                />
+              </div>
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox checked={Boolean(config?.smtp_use_ssl)} onCheckedChange={(checked) => patchConfig({ smtp_use_ssl: Boolean(checked) })} />
+                启用 SMTP SSL
+              </label>
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox checked={Boolean(config?.smtp_use_starttls)} onCheckedChange={(checked) => patchConfig({ smtp_use_starttls: Boolean(checked) })} />
+                启用 STARTTLS
+              </label>
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox checked={Boolean(config?.smtp_force_auth_login)} onCheckedChange={(checked) => patchConfig({ smtp_force_auth_login: Boolean(checked) })} />
+                强制 AUTH LOGIN
+              </label>
+            </div>
+          </div>
+          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-4 md:col-span-2">
+            <div>
+              <h2 className="text-sm font-semibold text-stone-900">Linux DO OAuth</h2>
+              <p className="mt-1 text-xs leading-5 text-stone-500">回调地址需填写到 Linux DO Connect 应用中。</p>
+            </div>
+            <div className="flex flex-col gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900 md:flex-row md:items-center md:justify-between">
+              <span className="break-all">回调 URL：{linuxDoCallbackUrl}</span>
+              <Button type="button" variant="outline" className="h-8 shrink-0 rounded-lg border-blue-200 bg-white px-3 text-blue-700" onClick={() => void copyLinuxDoCallbackUrl()}>
+                <Copy className="size-3.5" />
+                复制
+              </Button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700">
+                <Checkbox checked={Boolean(config?.linuxdo_oauth_enabled)} onCheckedChange={(checked) => patchConfig({ linuxdo_oauth_enabled: Boolean(checked) })} />
+                启用 Linux DO 登录注册
+              </label>
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">Linux DO Client ID</label>
+                <Input value={String(config?.linuxdo_client_id || "")} onChange={(event) => patchConfig({ linuxdo_client_id: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-stone-50" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">最低信任等级</label>
+                <Input value={String(config?.linuxdo_minimum_trust_level || "")} onChange={(event) => patchConfig({ linuxdo_minimum_trust_level: event.target.value })} placeholder="0" className="h-10 rounded-xl border-stone-200 bg-stone-50" />
+              </div>
+              <div className="space-y-2 md:col-span-3">
+                <label className="text-sm text-stone-700">Linux DO Client Secret</label>
+                <Input
+                  type="password"
+                  value={String(config?.linuxdo_client_secret || "")}
+                  onChange={(event) => patchConfig({ linuxdo_client_secret: event.target.value })}
+                  placeholder={config?.linuxdo_client_secret_set ? "已保存，留空则不修改" : "敏感信息不会发送到前端显示"}
+                  className="h-10 rounded-xl border-stone-200 bg-stone-50"
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-end">
           <Button
             className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-            onClick={() => void saveConfig()}
+            onClick={() => void handleSaveConfig()}
             disabled={isSavingConfig}
           >
             {isSavingConfig ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}

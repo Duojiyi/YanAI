@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from services.storage.base import StorageBackend
+from services.repositories.base import RepositoryProvider
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
@@ -347,6 +348,12 @@ class ConfigStore:
             from services.storage.factory import create_storage_backend
             self._storage_backend = create_storage_backend(DATA_DIR)
         return self._storage_backend
+
+    def get_repository_provider(self) -> RepositoryProvider | None:
+        """获取数据库 repository provider；非数据库后端返回 None。"""
+        storage = self.get_storage_backend()
+        provider = getattr(storage, "repository_provider", None)
+        return provider if isinstance(provider, RepositoryProvider) else None
 
 
 config = ConfigStore(CONFIG_FILE)

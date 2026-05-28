@@ -10,6 +10,8 @@ from typing import Literal
 
 from services.config import config
 from services.registration_security import validate_registration_email, verify_registration_code
+from services.repositories.base import RepositoryProvider
+from services.repositories.storage_adapter import RepositoryStorageAdapter
 from services.storage.base import StorageBackend
 
 AuthRole = Literal["admin", "user"]
@@ -72,8 +74,9 @@ def _parse_time(value: object) -> datetime | None:
 
 
 class AuthService:
-    def __init__(self, storage: StorageBackend):
-        self.storage = storage
+    def __init__(self, storage: StorageBackend | RepositoryProvider):
+        self.repositories = storage if isinstance(storage, RepositoryProvider) else None
+        self.storage = RepositoryStorageAdapter(storage) if isinstance(storage, RepositoryProvider) else storage
         self._lock = RLock()
         self._items = self._load_keys()
         self._users = self._load_users()
@@ -904,4 +907,4 @@ class AuthService:
         return None
 
 
-auth_service = AuthService(config.get_storage_backend())
+auth_service = AuthService(config.get_repository_provider() or config.get_storage_backend())

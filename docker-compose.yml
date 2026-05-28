@@ -4,7 +4,7 @@ services:
     container_name: yanai
     restart: unless-stopped
     ports:
-      - "${YANAI_PORT:-3001}:80"
+      - "${YANAI_PORT:-3000}:80"
     volumes:
       # Keep secrets and mutable runtime state outside of the public image.
       - ./data:/app/data

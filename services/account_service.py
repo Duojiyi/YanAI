@@ -16,6 +16,8 @@ from services.log_service import (
     log_service,
 )
 from services.proxy_service import proxy_settings
+from services.repositories.base import RepositoryProvider
+from services.repositories.storage_adapter import RepositoryStorageAdapter
 from services.storage.base import StorageBackend
 from utils.helper import anonymize_token
 
@@ -33,8 +35,13 @@ class AccountService:
         "enterprise": "Team",
     }
 
-    def __init__(self, storage_backend: StorageBackend):
-        self.storage = storage_backend
+    def __init__(self, storage_backend: StorageBackend | RepositoryProvider):
+        self.repositories = storage_backend if isinstance(storage_backend, RepositoryProvider) else None
+        self.storage = (
+            RepositoryStorageAdapter(storage_backend)
+            if isinstance(storage_backend, RepositoryProvider)
+            else storage_backend
+        )
         self._lock = Lock()
         self._index = 0
         self._accounts = self._load_accounts()
@@ -633,4 +640,4 @@ class AccountService:
         }
 
 
-account_service = AccountService(config.get_storage_backend())
+account_service = AccountService(config.get_repository_provider() or config.get_storage_backend())

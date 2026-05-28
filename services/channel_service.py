@@ -11,6 +11,8 @@ from curl_cffi.requests import Session
 
 from services.config import config
 from services.protocol.conversation import format_image_result
+from services.repositories.base import RepositoryProvider
+from services.repositories.storage_adapter import RepositoryStorageAdapter
 from services.storage.base import StorageBackend
 
 
@@ -31,8 +33,9 @@ def _normalize_models(value: object) -> list[str]:
 
 
 class ChannelService:
-    def __init__(self, storage: StorageBackend):
-        self.storage = storage
+    def __init__(self, storage: StorageBackend | RepositoryProvider):
+        self.repositories = storage if isinstance(storage, RepositoryProvider) else None
+        self.storage = RepositoryStorageAdapter(storage) if isinstance(storage, RepositoryProvider) else storage
         self._lock = RLock()
         self._channels = self._load()
 
@@ -295,4 +298,4 @@ class ChannelService:
         return normalized
 
 
-channel_service = ChannelService(config.get_storage_backend())
+channel_service = ChannelService(config.get_repository_provider() or config.get_storage_backend())

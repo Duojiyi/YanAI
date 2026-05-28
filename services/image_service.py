@@ -6,6 +6,8 @@ import uuid
 from urllib.parse import urlparse
 
 from services.config import config
+from services.repositories.base import ImageRecordRepository
+from services.storage.base import StorageBackend
 
 
 def _clean(value: object) -> str:
@@ -61,6 +63,14 @@ def _group_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
     return [{"date": key, "items": value} for key, value in groups.items()]
 
 
+def _image_record_source() -> ImageRecordRepository | StorageBackend:
+    get_repository_provider = getattr(config, "get_repository_provider", None)
+    repositories = get_repository_provider() if callable(get_repository_provider) else None
+    if repositories is not None:
+        return repositories.image_records
+    return config.get_storage_backend()
+
+
 def _list_files(base_url: str, start_date: str = "", end_date: str = "", seen_urls: set[str] | None = None) -> list[dict[str, object]]:
     config.cleanup_old_images()
     seen = seen_urls or set()
@@ -97,9 +107,12 @@ def list_images(
     owner_user_id: str = "",
     channel: str = "",
 ) -> dict[str, object]:
-    storage = config.get_storage_backend()
+    storage = _image_record_source()
     try:
-        records = storage.load_image_records()
+        if isinstance(storage, ImageRecordRepository):
+            records = storage.list()
+        else:
+            records = storage.load_image_records()
     except Exception:
         records = []
     items = []
@@ -138,9 +151,12 @@ def record_image_result(
     data = result.get("data") if isinstance(result, dict) else None
     if not isinstance(data, list):
         return []
-    storage = config.get_storage_backend()
+    storage = _image_record_source()
     try:
-        records = storage.load_image_records()
+        if isinstance(storage, ImageRecordRepository):
+            records = storage.list()
+        else:
+            records = storage.load_image_records()
     except Exception:
         records = []
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -170,5 +186,9 @@ def record_image_result(
         }
         created.append(record)
     if created:
-        storage.save_image_records([*created, *[record for record in records if isinstance(record, dict)]])
+        if isinstance(storage, ImageRecordRepository):
+            for record in reversed(created):
+                storage.upsert(record)
+        else:
+            storage.save_image_records([*created, *[record for record in records if isinstance(record, dict)]])
     return created

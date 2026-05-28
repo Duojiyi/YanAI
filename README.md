@@ -81,6 +81,43 @@ environment:
   - DATABASE_URL=postgresql://user:password@host:5432/dbname
 ```
 
+### 迁移前保护和审计
+
+从旧 JSON 存储迁移到 SQLite、PostgreSQL 或 Git 前，必须先停写。Docker 部署请先停止 YanAI 容器，确认没有后台任务继续写入 `data/*.json`：
+
+```bash
+docker compose stop app
+# 如果是按容器名直接管理，也可以使用：docker stop yanai
+```
+
+先执行只读审计，确认 8 类旧 JSON 数据的数量、重复主键、缺失主键和异常 JSON：
+
+```bash
+python scripts/audit_storage.py --data-dir data
+```
+
+生成完整 JSON 备份目录，并校验备份可恢复：
+
+```bash
+python scripts/backup_storage.py --data-dir data --backup-dir data/backups/pre-migration
+python scripts/backup_storage.py --verify data/backups/pre-migration
+```
+
+恢复演练可以写到临时目录，避免覆盖生产数据：
+
+```bash
+python scripts/backup_storage.py --restore data/backups/pre-migration --target-dir .tmp/restore-check
+python scripts/audit_storage.py --data-dir .tmp/restore-check --fail-on-issues
+```
+
+迁移脚本支持预演、迁移前备份和只校验模式：
+
+```bash
+python scripts/migrate_storage.py --from json --to postgres --dry-run
+python scripts/migrate_storage.py --from json --to postgres --backup-dir data/backups/pre-postgres
+python scripts/migrate_storage.py --from json --to postgres --verify-only
+```
+
 ## 功能
 
 ### API 兼容能力

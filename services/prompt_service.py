@@ -8,6 +8,8 @@ import uuid
 from typing import Any
 
 from services.config import config
+from services.repositories.base import RepositoryProvider
+from services.repositories.storage_adapter import RepositoryStorageAdapter
 from services.storage.base import StorageBackend
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -125,12 +127,13 @@ def _normalize_prompt(raw: object, *, generated_id: bool = True) -> dict[str, An
 class PromptLibraryService:
     def __init__(
         self,
-        storage: StorageBackend,
+        storage: StorageBackend | RepositoryProvider,
         *,
         bootstrap_paths: tuple[Path, ...] = BOOTSTRAP_PROMPT_PATHS,
         assets_dir: Path | None = None,
     ):
-        self.storage = storage
+        self.repositories = storage if isinstance(storage, RepositoryProvider) else None
+        self.storage = RepositoryStorageAdapter(storage) if isinstance(storage, RepositoryProvider) else storage
         self.bootstrap_paths = bootstrap_paths
         self.assets_dir = assets_dir or config.prompt_assets_dir
         self._items = self._load_items()
@@ -273,4 +276,4 @@ class PromptLibraryService:
         return f"/prompt-assets/{day}/{target.name}"
 
 
-prompt_library_service = PromptLibraryService(config.get_storage_backend())
+prompt_library_service = PromptLibraryService(config.get_repository_provider() or config.get_storage_backend())

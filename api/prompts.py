@@ -56,6 +56,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return {"item": item, **_prompt_response()}
 
+    @router.post("/api/admin/prompt-assets")
     @router.post("/api/admin/prompts/assets")
     async def admin_upload_prompt_asset(
             file: UploadFile = File(...),
@@ -71,6 +72,8 @@ def create_router() -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail={"error": f"failed to save image asset: {exc}"}) from exc
         return {"url": url}
 
     @router.post("/api/admin/prompts/{prompt_id}")

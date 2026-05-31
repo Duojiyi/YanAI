@@ -12,6 +12,12 @@ from services.storage.json_storage import JSONStorageBackend
 
 class PromptApiTests(unittest.TestCase):
     def test_upload_prompt_asset_route_is_not_shadowed_by_prompt_id_route(self) -> None:
+        self._assert_upload_prompt_asset("/api/admin/prompts/assets")
+
+    def test_upload_prompt_asset_has_stable_non_dynamic_route(self) -> None:
+        self._assert_upload_prompt_asset("/api/admin/prompt-assets")
+
+    def _assert_upload_prompt_asset(self, path: str) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             service = PromptLibraryService(
@@ -28,7 +34,7 @@ class PromptApiTests(unittest.TestCase):
                 app = FastAPI()
                 app.include_router(prompts_api.create_router())
                 response = TestClient(app).post(
-                    "/api/admin/prompts/assets",
+                    path,
                     files={"file": ("sample.png", b"image-bytes", "image/png")},
                 )
             finally:

@@ -509,7 +509,7 @@ export async function deleteAdminPrompt(promptId: string) {
 export async function uploadPromptExampleImage(file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  return httpRequest<{ url: string }>("/api/admin/prompts/assets", {
+  return httpRequest<{ url: string }>("/api/admin/prompt-assets", {
     method: "POST",
     body: formData,
   });

@@ -1247,6 +1247,54 @@ class SQLAlchemyQuotaReservationRepository(QuotaReservationRepository):
             ).scalars()
             return [self._to_item(row) for row in rows]
 
+    def replace_all(self, items: list[dict[str, Any]]) -> None:
+        rows: list[QuotaReservationRow] = []
+        seen_ids: set[str] = set()
+        seen_requests: set[str] = set()
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise RepositoryValidationError(f"quota_reservations[{index}] is not an object")
+            data = dict(item)
+            reservation_id = _clean(data.get("id") or data.get("reservation_id"))
+            user_id = _clean(data.get("user_id"))
+            request_id = _clean(data.get("request_id"))
+            if not reservation_id:
+                raise RepositoryValidationError(f"quota_reservations[{index}] missing id")
+            if not user_id:
+                raise RepositoryValidationError(f"quota_reservations[{index}] missing user_id")
+            if not request_id:
+                raise RepositoryValidationError(f"quota_reservations[{index}] missing request_id")
+            if reservation_id in seen_ids:
+                raise RepositoryValidationError(f"quota_reservations[{index}] duplicate id")
+            if request_id in seen_requests:
+                raise RepositoryValidationError(f"quota_reservations[{index}] duplicate request_id")
+            seen_ids.add(reservation_id)
+            seen_requests.add(request_id)
+            data["id"] = reservation_id
+            data["reservation_id"] = reservation_id
+            data["user_id"] = user_id
+            data["request_id"] = request_id
+            data["amount"] = _non_negative_int(data.get("amount"))
+            data["status"] = _clean(data.get("status")) or "reserved"
+            data["created_at"] = _clean(data.get("created_at")) or _iso(_now_utc())
+            data["expires_at"] = _clean(data.get("expires_at")) or data["created_at"]
+            rows.append(
+                QuotaReservationRow(
+                    reservation_id=reservation_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    amount=int(data["amount"]),
+                    status=str(data["status"]),
+                    created_at=str(data["created_at"]),
+                    expires_at=str(data["expires_at"]),
+                    data=data,
+                )
+            )
+        with self._session_factory() as session:
+            with session.begin():
+                session.execute(delete(QuotaReservationRow))
+                session.add_all(rows)
+
     def count(self) -> int:
         with self._session_factory() as session:
             return int(session.execute(select(func.count()).select_from(QuotaReservationRow)).scalar_one())
@@ -1426,6 +1474,32 @@ class SQLAlchemySystemLogRepository(SystemLogRepository):
             rows = session.execute(select(SystemLogRow).order_by(SystemLogRow.id.asc())).scalars()
             return [self._to_item(row) for row in rows]
 
+    def replace_all(self, items: list[dict[str, Any]]) -> None:
+        rows: list[SystemLogRow] = []
+        seen: set[str] = set()
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise RepositoryValidationError(f"system_logs[{index}] is not an object")
+            normalized = self._normalize_item(item)
+            log_id = str(normalized["id"])
+            if log_id in seen:
+                raise RepositoryValidationError(f"system_logs[{index}] duplicate id")
+            seen.add(log_id)
+            rows.append(
+                SystemLogRow(
+                    log_id=log_id,
+                    request_id=_clean(normalized.get("request_id")) or None,
+                    type=_clean(normalized.get("type")) or None,
+                    time=str(normalized["time"]),
+                    summary=_clean(normalized.get("summary")) or None,
+                    data=normalized,
+                )
+            )
+        with self._session_factory() as session:
+            with session.begin():
+                session.execute(delete(SystemLogRow))
+                session.add_all(rows)
+
     def query(
         self,
         *,
@@ -1589,6 +1663,36 @@ class SQLAlchemyAuditLogRepository(AuditLogRepository):
         with self._session_factory() as session:
             rows = session.execute(select(AuditLogRow).order_by(AuditLogRow.id.asc())).scalars()
             return [self._to_item(row) for row in rows]
+
+    def replace_all(self, items: list[dict[str, Any]]) -> None:
+        rows: list[AuditLogRow] = []
+        seen: set[str] = set()
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise RepositoryValidationError(f"audit_logs[{index}] is not an object")
+            normalized = self._normalize_item(item)
+            audit_id = str(normalized["id"])
+            if audit_id in seen:
+                raise RepositoryValidationError(f"audit_logs[{index}] duplicate id")
+            seen.add(audit_id)
+            rows.append(
+                AuditLogRow(
+                    audit_id=audit_id,
+                    request_id=_clean(normalized.get("request_id")) or None,
+                    time=str(normalized["time"]),
+                    actor_id=_clean(normalized.get("actor_id")) or None,
+                    actor_role=_clean(normalized.get("actor_role")) or None,
+                    action=_clean(normalized.get("action")) or None,
+                    resource=_clean(normalized.get("resource")) or None,
+                    target_id=_clean(normalized.get("target_id")) or None,
+                    status=_clean(normalized.get("status")) or None,
+                    data=normalized,
+                )
+            )
+        with self._session_factory() as session:
+            with session.begin():
+                session.execute(delete(AuditLogRow))
+                session.add_all(rows)
 
     def query(
         self,

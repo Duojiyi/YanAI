@@ -28,6 +28,7 @@ from services.repositories.base import RepositoryValidationError
 from services.storage.factory import create_storage_backend
 from scripts.storage_safety import (
     DATASET_SPECS,
+    DatasetSpec,
     audit_data_dir,
     create_backup,
     format_audit_report,
@@ -36,6 +37,14 @@ from scripts.storage_safety import (
     verify_backup,
 )
 
+
+EXTRA_DATASET_SPECS: tuple[DatasetSpec, ...] = (
+    DatasetSpec("quota_reservations", "quota_reservations.json", "id", "Quota reservations", unique_keys=("request_id",)),
+    DatasetSpec("system_settings", "system_settings.json", "key", "System settings"),
+    DatasetSpec("system_logs", "logs.jsonl", "id", "System logs"),
+    DatasetSpec("audit_logs", "audit_logs.json", "id", "Audit logs"),
+)
+MIGRATION_DATASET_SPECS: tuple[DatasetSpec, ...] = DATASET_SPECS + EXTRA_DATASET_SPECS
 
 DATASET_ACCESSORS = {
     "accounts": ("load_accounts", "save_accounts"),
@@ -224,6 +233,23 @@ def _load_all_datasets(storage) -> dict[str, list[dict]]:
     for spec in DATASET_SPECS:
         loader_name, _ = DATASET_ACCESSORS[spec.name]
         data[spec.name] = list(getattr(storage, loader_name)())
+    provider = _repository_provider(storage)
+    if provider is not None:
+        data["quota_reservations"] = list(provider.quota_reservations.list())
+        data["system_settings"] = _settings_to_items(provider.system_config.list_settings())
+        data["system_logs"] = list(provider.system_logs.list())
+        data["audit_logs"] = list(provider.audit_logs.list())
+        return data
+
+    data["quota_reservations"] = []
+    data["system_settings"] = []
+    if _backend_type(storage) == "json":
+        system_logs = _load_jsonl_logs(DATA_DIR / "logs.jsonl")
+        data["system_logs"] = system_logs
+        data["audit_logs"] = _audit_logs_from_system_logs(system_logs)
+    else:
+        data["system_logs"] = []
+        data["audit_logs"] = []
     return data
 
 
@@ -231,13 +257,21 @@ def _save_all_datasets(storage, data: dict[str, list[dict]]) -> None:
     for spec in DATASET_SPECS:
         _, saver_name = DATASET_ACCESSORS[spec.name]
         getattr(storage, saver_name)(data.get(spec.name, []))
+    provider = _repository_provider(storage)
+    if provider is not None:
+        _replace_repository_items(provider.quota_reservations, data.get("quota_reservations", []), "quota_reservations")
+        _replace_system_settings(provider.system_config, data.get("system_settings", []))
+        _replace_repository_items(provider.system_logs, data.get("system_logs", []), "system_logs")
+        _replace_repository_items(provider.audit_logs, data.get("audit_logs", []), "audit_logs")
+    elif _backend_type(storage) == "json":
+        _save_jsonl_logs(DATA_DIR / "logs.jsonl", data.get("system_logs", []), data.get("audit_logs", []))
 
 
 def _parse_import_payload(payload: object) -> dict[str, list[dict]]:
     if isinstance(payload, list):
         return {
             spec.name: payload if spec.name == "accounts" else []
-            for spec in DATASET_SPECS
+            for spec in MIGRATION_DATASET_SPECS
         }
     if not isinstance(payload, dict):
         raise ValueError("Invalid JSON format, expected full export object or legacy accounts array")
@@ -249,7 +283,7 @@ def _parse_import_payload(payload: object) -> dict[str, list[dict]]:
         raise ValueError("Invalid JSON format, field 'datasets' must be an object")
 
     data: dict[str, list[dict]] = {}
-    for spec in DATASET_SPECS:
+    for spec in MIGRATION_DATASET_SPECS:
         items = raw_datasets.get(spec.name, [])
         if spec.list_key and isinstance(items, dict):
             items = items.get(spec.list_key, [])
@@ -261,7 +295,7 @@ def _parse_import_payload(payload: object) -> dict[str, list[dict]]:
 
 def _validate_dataset_report(data: dict[str, list[dict]]) -> bool:
     ok = True
-    for spec in DATASET_SPECS:
+    for spec in MIGRATION_DATASET_SPECS:
         items = data.get(spec.name, [])
         problems = _dataset_problems(items, spec.primary_key, spec.unique_keys)
         if problems:
@@ -309,7 +343,7 @@ def _dataset_problems(items: list[dict], primary_key: str, unique_keys: tuple[st
 
 def _verify_dataset_data(source: dict[str, list[dict]], target: dict[str, list[dict]]) -> bool:
     ok = True
-    for spec in DATASET_SPECS:
+    for spec in MIGRATION_DATASET_SPECS:
         source_items = source.get(spec.name, [])
         target_items = target.get(spec.name, [])
         if len(source_items) != len(target_items):
@@ -346,8 +380,127 @@ def _sha_preview(value: str) -> str:
 
 
 def _print_dataset_counts(label: str, data: dict[str, list[dict]]) -> None:
-    counts = ", ".join(f"{spec.name}={len(data.get(spec.name, []))}" for spec in DATASET_SPECS)
+    counts = ", ".join(f"{spec.name}={len(data.get(spec.name, []))}" for spec in MIGRATION_DATASET_SPECS)
     print(f"[migrate] {label}: {counts}")
+
+
+def _repository_provider(storage):
+    provider = getattr(storage, "repository_provider", None)
+    return provider
+
+
+def _backend_type(storage) -> str:
+    try:
+        info = storage.get_backend_info()
+    except Exception:
+        return ""
+    return str(info.get("type") or info.get("backend") or "").strip().lower()
+
+
+def _settings_to_items(settings: dict[str, object]) -> list[dict]:
+    return [
+        {"key": str(key), "value": value}
+        for key, value in sorted((settings or {}).items(), key=lambda pair: str(pair[0]))
+    ]
+
+
+def _settings_from_items(items: list[dict]) -> dict[str, object]:
+    settings: dict[str, object] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = _clean_value(item.get("key") or item.get("setting_key"))
+        if key:
+            settings[key] = item.get("value")
+    return settings
+
+
+def _replace_system_settings(repository, items: list[dict]) -> None:
+    settings = _settings_from_items(items)
+    for key in list(repository.list_settings()):
+        if key not in settings:
+            repository.delete_setting(key)
+    for key, value in settings.items():
+        repository.set_setting(key, value)
+
+
+def _replace_repository_items(repository, items: list[dict], dataset_name: str) -> None:
+    replace_all = getattr(repository, "replace_all", None)
+    if not callable(replace_all):
+        if items:
+            raise RuntimeError(f"{dataset_name} cannot be imported by this storage backend")
+        return
+    replace_all(items)
+
+
+def _load_jsonl_logs(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    logs: list[dict] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            item = json.loads(text)
+        except json.JSONDecodeError as exc:
+            print(f"[migrate] Skipping invalid logs.jsonl line {line_number}: {exc}")
+            continue
+        if isinstance(item, dict):
+            if not _clean_value(item.get("id") or item.get("log_id")):
+                item = dict(item)
+                item["id"] = _stable_file_log_id(item, line_number)
+            logs.append(item)
+    return logs
+
+
+def _save_jsonl_logs(path: Path, system_logs: list[dict], audit_logs: list[dict]) -> None:
+    logs = system_logs if system_logs else audit_logs
+    if not logs:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n" for item in logs),
+        encoding="utf-8",
+    )
+
+
+def _audit_logs_from_system_logs(system_logs: list[dict]) -> list[dict]:
+    audit_logs: list[dict] = []
+    seen: set[str] = set()
+    for log in system_logs:
+        if not isinstance(log, dict) or _clean_value(log.get("type")) != "audit":
+            continue
+        detail = log.get("detail")
+        if isinstance(detail, dict) and (
+            detail.get("action") or detail.get("actor_id") or detail.get("resource") or detail.get("target_id")
+        ):
+            item = dict(detail)
+        else:
+            item = dict(log)
+        item["id"] = _clean_value(item.get("id") or item.get("audit_id") or log.get("id") or log.get("log_id"))
+        if not item["id"]:
+            continue
+        if item["id"] in seen:
+            continue
+        seen.add(str(item["id"]))
+        item.setdefault("audit_id", item["id"])
+        item.setdefault("time", log.get("time") or "")
+        item.setdefault("request_id", log.get("request_id") or "")
+        item.setdefault("type", "audit")
+        if not _clean_value(item.get("action")):
+            item["action"] = _clean_value(log.get("summary"))
+        item.setdefault("summary", item.get("action") or log.get("summary") or "")
+        audit_logs.append(item)
+    return audit_logs
+
+
+def _stable_file_log_id(item: dict, line_number: int) -> str:
+    import hashlib
+
+    payload = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(f"{line_number}:{payload}".encode("utf-8")).hexdigest()[:24]
+    return f"file-log-{digest}"
 
 
 def _create_and_verify_backup(backup_dir: str) -> None:

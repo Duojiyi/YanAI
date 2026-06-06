@@ -92,6 +92,50 @@ class ModelServiceTest(unittest.TestCase):
             self.assertFalse(service.is_internal_pool_enabled())
             self.assertFalse(service.list_channels()[0]["enabled"])
 
+    def test_channel_model_test_reports_status_without_persisting_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
+            storage.save_channels(
+                [
+                    {
+                        "id": "channel-a",
+                        "name": "A",
+                        "base_url": "https://a.example",
+                        "api_key": "sk-test",
+                        "models": ["configured-model"],
+                    }
+                ]
+            )
+            service = ChannelService(storage, FakeConfigStore())
+
+            service._fetch_external_channel_models = lambda channel: ["remote-model", "other-model"]  # type: ignore[method-assign]
+            result = service.test_channel_models("channel-a", ["remote-model"])
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["models"], ["remote-model", "other-model"])
+            self.assertEqual(result["tested_models"], ["remote-model"])
+            self.assertEqual(result["missing_models"], [])
+            self.assertEqual(service.get_channel("channel-a")["models"], ["configured-model"])
+
+            missing = service.test_channel_models("channel-a", ["missing-model"])
+
+            self.assertIsNotNone(missing)
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["tested_models"], ["missing-model"])
+            self.assertEqual(missing["missing_models"], ["missing-model"])
+
+            def fail_fetch(channel):
+                raise RuntimeError("models unavailable")
+
+            service._fetch_external_channel_models = fail_fetch  # type: ignore[method-assign]
+            failed = service.test_channel_models("channel-a", ["remote-model"])
+
+            self.assertIsNotNone(failed)
+            self.assertFalse(failed["ok"])
+            self.assertEqual(failed["tested_models"], ["remote-model"])
+            self.assertIn("models unavailable", failed["error"])
+
     def test_update_pricing_persists_and_estimates_token_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")

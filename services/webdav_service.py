@@ -221,7 +221,7 @@ def _record_id(record: dict[str, object]) -> str:
     return _clean(record.get("record_id") or record.get("id"))
 
 
-def _record_matches_filters(record: dict[str, object], filters: dict[str, str]) -> bool:
+def _record_matches_filters(record: dict[str, object], filters: dict[str, object]) -> bool:
     created_at = _clean(record.get("created_at"))
     day = created_at[:10]
     owner_user_id = _clean(filters.get("owner_user_id"))

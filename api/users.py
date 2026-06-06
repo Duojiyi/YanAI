@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 from urllib.parse import urlencode
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.support import require_admin, require_identity, resolve_image_base_url
 from services.auth_service import auth_service
 from services.channel_service import channel_service
 from services.config import config
-from services.image_service import list_images
+from services.image_service import collect_downloadable_images, delete_images, list_images
 from services.log_service import audit_service
 from services.model_service import model_service
 from services import linuxdo_oauth_service
@@ -43,9 +47,22 @@ class WebDAVConfigRequest(BaseModel):
     root_path: str = ""
 
 
+class ImageSelectionItem(BaseModel):
+    id: str = ""
+    record_id: str = ""
+    url: str = ""
+
+
+class ImageSelectionRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+    urls: list[str] = Field(default_factory=list)
+    items: list[ImageSelectionItem] = Field(default_factory=list)
+
+
 class MyImagesWebDAVSyncRequest(BaseModel):
     start_date: str = ""
     end_date: str = ""
+    ids: list[str] = Field(default_factory=list)
 
 
 class RedeemRequest(BaseModel):
@@ -118,6 +135,10 @@ class ChannelUpdateRequest(BaseModel):
     enabled: bool | None = None
 
 
+class ChannelModelTestRequest(BaseModel):
+    models: list[str] = Field(default_factory=list)
+
+
 class ModelPricingRequest(BaseModel):
     model: str = ""
     enabled: bool | None = None
@@ -129,6 +150,29 @@ class ModelPricingRequest(BaseModel):
     completion_ratio: float | None = None
     model_price: float | None = None
     note: str | None = None
+
+
+def _selection_targets(body: ImageSelectionRequest) -> tuple[list[str], list[str]]:
+    record_ids = [
+        *body.ids,
+        *[item.record_id or item.id for item in body.items if item.record_id or item.id],
+    ]
+    urls = [
+        *body.urls,
+        *[item.url for item in body.items if item.url],
+    ]
+    return record_ids, urls
+
+
+def _build_image_download_zip(downloads: list[dict[str, object]]) -> bytes:
+    archive = BytesIO()
+    with ZipFile(archive, mode="w", compression=ZIP_DEFLATED) as zip_file:
+        for item in downloads:
+            path = item.get("path")
+            if not isinstance(path, Path):
+                continue
+            zip_file.write(path, arcname=str(item.get("name") or path.name))
+    return archive.getvalue()
 
 
 def create_router() -> APIRouter:
@@ -271,6 +315,55 @@ def create_router() -> APIRouter:
             page_size=page_size,
         )
 
+    @router.delete("/api/me/images")
+    async def delete_my_images(body: ImageSelectionRequest, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        if identity.get("role") != "user":
+            raise HTTPException(status_code=403, detail={"error": "user permission required"})
+        record_ids, urls = _selection_targets(body)
+        if not any(str(value or "").strip() for value in [*record_ids, *urls]):
+            raise HTTPException(status_code=400, detail={"error": "image ids or urls are required"})
+        result = delete_images(
+            record_ids=record_ids,
+            urls=urls,
+            owner_user_id=str(identity.get("id") or ""),
+        )
+        audit_service.add(
+            actor=identity,
+            action="me.images.delete",
+            resource="image",
+            target_id=",".join(str(value) for value in record_ids[:5] if str(value).strip()),
+            detail={
+                "requested": len(body.items) or len(record_ids) or len(urls),
+                **result,
+            },
+        )
+        return result
+
+    @router.post("/api/me/images/download")
+    async def download_my_images(body: ImageSelectionRequest, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        if identity.get("role") != "user":
+            raise HTTPException(status_code=403, detail={"error": "user permission required"})
+        record_ids, urls = _selection_targets(body)
+        if not any(str(value or "").strip() for value in [*record_ids, *urls]):
+            raise HTTPException(status_code=400, detail={"error": "image ids or urls are required"})
+        downloads = await run_in_threadpool(
+            collect_downloadable_images,
+            record_ids=record_ids,
+            urls=urls,
+            owner_user_id=str(identity.get("id") or ""),
+        )
+        if not downloads:
+            raise HTTPException(status_code=404, detail={"error": "no downloadable local image files found"})
+        content = await run_in_threadpool(_build_image_download_zip, downloads)
+        filename = f"my-images-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        return StreamingResponse(
+            iter([content]),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @router.get("/api/me/images/webdav")
     async def get_my_images_webdav(authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
@@ -302,6 +395,7 @@ def create_router() -> APIRouter:
                 filters={
                     "start_date": body.start_date.strip(),
                     "end_date": body.end_date.strip(),
+                    "record_ids": [item.strip() for item in body.ids if item.strip()],
                 },
             )
         except ValueError as exc:
@@ -532,6 +626,33 @@ def create_router() -> APIRouter:
             detail={"models": result.get("models"), "channel": result.get("channel")},
         )
         return {**result, **model_service.list_catalog()}
+
+    @router.post("/api/admin/channels/{channel_id}/models/test")
+    async def admin_test_channel_models(
+            channel_id: str,
+            body: ChannelModelTestRequest | None = None,
+            authorization: str | None = Header(default=None),
+    ):
+        admin = require_admin(authorization)
+        selected_models = [] if body is None else body.models
+        result = await run_in_threadpool(channel_service.test_channel_models, channel_id, selected_models)
+        if result is None:
+            raise HTTPException(status_code=404, detail={"error": "channel not found"})
+        audit_service.add(
+            actor=admin,
+            action="channels.models.test",
+            resource="channel",
+            target_id=channel_id,
+            detail={
+                "ok": result.get("ok"),
+                "model_count": result.get("model_count"),
+                "tested_models": result.get("tested_models"),
+                "missing_models": result.get("missing_models"),
+                "latency_ms": result.get("latency_ms"),
+                "error": result.get("error"),
+            },
+        )
+        return result
 
     @router.delete("/api/admin/channels/{channel_id}")
     async def admin_delete_channel(channel_id: str, authorization: str | None = Header(default=None)):

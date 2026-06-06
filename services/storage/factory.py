@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+import json
 import os
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -10,11 +12,11 @@ from services.storage.git_storage import GitStorageBackend
 from services.storage.json_storage import JSONStorageBackend
 
 
-def create_storage_backend(data_dir: Path) -> StorageBackend:
+def create_storage_backend(data_dir: Path, settings: Mapping[str, object] | None = None) -> StorageBackend:
     """
-    根据环境变量创建存储后端
+    根据环境变量或 config.json 创建存储后端
     
-    环境变量：
+    环境变量优先；未设置时读取项目根目录 config.json：
     - STORAGE_BACKEND: json|sqlite|postgres|git (默认 json)
     - DATABASE_URL: 数据库连接字符串 (用于 sqlite/postgres)
     - GIT_REPO_URL: Git 仓库地址 (用于 git)
@@ -23,7 +25,8 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
     - GIT_FILE_PATH: Git 仓库中的文件路径 (默认 accounts.json)
     - GIT_*_FILE_PATH: Git 仓库中各数据集的文件路径
     """
-    backend_type = os.getenv("STORAGE_BACKEND", "json").lower().strip()
+    resolved_settings = settings if settings is not None else _load_config_settings(data_dir)
+    backend_type = _get_setting("STORAGE_BACKEND", "json", resolved_settings).lower()
     
     print(f"[storage] Initializing storage backend: {backend_type}")
     
@@ -36,7 +39,7 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
     
     elif backend_type in ("sqlite", "postgres", "postgresql", "mysql", "database"):
         # 数据库存储
-        database_url = os.getenv("DATABASE_URL", "").strip()
+        database_url = _get_setting("DATABASE_URL", "", resolved_settings)
         
         if not database_url:
             # 如果没有指定 DATABASE_URL，使用本地 SQLite
@@ -50,17 +53,17 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
     
     elif backend_type == "git":
         # Git 仓库存储
-        repo_url = os.getenv("GIT_REPO_URL", "").strip()
-        token = os.getenv("GIT_TOKEN", "").strip()
-        branch = os.getenv("GIT_BRANCH", "main").strip()
-        file_path = os.getenv("GIT_FILE_PATH", "accounts.json").strip()
-        auth_keys_file_path = os.getenv("GIT_AUTH_KEYS_FILE_PATH", "auth_keys.json").strip()
-        users_file_path = os.getenv("GIT_USERS_FILE_PATH", "users.json").strip()
-        sessions_file_path = os.getenv("GIT_SESSIONS_FILE_PATH", "sessions.json").strip()
-        redeem_codes_file_path = os.getenv("GIT_REDEEM_CODES_FILE_PATH", "redeem_codes.json").strip()
-        channels_file_path = os.getenv("GIT_CHANNELS_FILE_PATH", "channels.json").strip()
-        prompt_library_file_path = os.getenv("GIT_PROMPT_LIBRARY_FILE_PATH", "prompt_library.json").strip()
-        image_records_file_path = os.getenv("GIT_IMAGE_RECORDS_FILE_PATH", "image_records.json").strip()
+        repo_url = _get_setting("GIT_REPO_URL", "", resolved_settings)
+        token = _get_setting("GIT_TOKEN", "", resolved_settings)
+        branch = _get_setting("GIT_BRANCH", "main", resolved_settings)
+        file_path = _get_setting("GIT_FILE_PATH", "accounts.json", resolved_settings)
+        auth_keys_file_path = _get_setting("GIT_AUTH_KEYS_FILE_PATH", "auth_keys.json", resolved_settings)
+        users_file_path = _get_setting("GIT_USERS_FILE_PATH", "users.json", resolved_settings)
+        sessions_file_path = _get_setting("GIT_SESSIONS_FILE_PATH", "sessions.json", resolved_settings)
+        redeem_codes_file_path = _get_setting("GIT_REDEEM_CODES_FILE_PATH", "redeem_codes.json", resolved_settings)
+        channels_file_path = _get_setting("GIT_CHANNELS_FILE_PATH", "channels.json", resolved_settings)
+        prompt_library_file_path = _get_setting("GIT_PROMPT_LIBRARY_FILE_PATH", "prompt_library.json", resolved_settings)
+        image_records_file_path = _get_setting("GIT_IMAGE_RECORDS_FILE_PATH", "image_records.json", resolved_settings)
         
         if not repo_url:
             raise ValueError(
@@ -107,6 +110,35 @@ def _mask_password(url: str) -> str:
         return url
     except Exception:
         return url
+
+
+def _load_config_settings(data_dir: Path) -> dict[str, object]:
+    config_path = data_dir.resolve().parent / "config.json"
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _get_setting(name: str, default: str, settings: Mapping[str, object]) -> str:
+    env_value = os.getenv(name)
+    if env_value is not None and env_value.strip():
+        return _strip_wrapping_quotes(env_value)
+
+    value = _lookup_setting(settings, name, default)
+    return _strip_wrapping_quotes(str(default if value is None else value))
+
+
+def _lookup_setting(settings: Mapping[str, object], name: str, default: str) -> object:
+    if name in settings:
+        return settings[name]
+
+    normalized_name = name.lower()
+    for key, value in settings.items():
+        if str(key).lower() == normalized_name:
+            return value
+    return default
 
 
 def _strip_wrapping_quotes(value: str) -> str:

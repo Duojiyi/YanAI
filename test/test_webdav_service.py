@@ -69,6 +69,12 @@ class WebDAVServiceTests(unittest.TestCase):
                     "record_id": "image-a",
                     "url": "http://127.0.0.1:8000/images/2026/06/05/sample.png",
                     "created_at": "2026-06-05 12:00:00",
+                },
+                {
+                    "id": "image-b",
+                    "record_id": "image-b",
+                    "url": "http://127.0.0.1:8000/images/2026/06/05/sample.png",
+                    "created_at": "2026-06-05 12:01:00",
                 }
             ]
 
@@ -114,12 +120,14 @@ class WebDAVServiceTests(unittest.TestCase):
                 result = webdav_service.sync_images_to_webdav(
                     scope="admin",
                     identity={"id": "admin", "role": "admin"},
-                    filters={},
+                    filters={"record_ids": ["image-a"]},
                 )
 
         self.assertEqual(result["uploaded"], 1)
         self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["total"], 1)
         self.assertEqual(records[0]["webdav_status"], "synced")
+        self.assertNotIn("webdav_status", records[1])
         self.assertEqual(
             records[0]["webdav_url"],
             "https://dav.example/base/YanAI/2026/06/05/sample.png",

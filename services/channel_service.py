@@ -43,6 +43,23 @@ def _normalize_models(value: object) -> list[str]:
     return ["gpt-image-1", "gpt-image-2"]
 
 
+def _requested_models(value: object) -> list[str]:
+    if isinstance(value, list):
+        candidates = value
+    elif isinstance(value, str):
+        candidates = value.replace(";", ",").split(",")
+    else:
+        candidates = []
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in candidates:
+        model = _clean(item)
+        if model and model not in seen:
+            seen.add(model)
+            result.append(model)
+    return result
+
+
 class ChannelService:
     def __init__(self, storage: StorageBackend | RepositoryProvider, config_store=None):
         self.repositories = storage if isinstance(storage, RepositoryProvider) else None
@@ -264,22 +281,27 @@ class ChannelService:
             models.append(model)
         return models
 
-    def fetch_channel_models(self, channel_id: str) -> list[str] | None:
-        normalized_id = _clean(channel_id)
-        if normalized_id == "internal_pool":
-            try:
-                from services.protocol.openai_v1_models import list_models
+    def _fetch_internal_channel_models(self, *, allow_default_fallback: bool) -> list[str]:
+        try:
+            from services.protocol.openai_v1_models import list_models
 
-                models = self.extract_model_ids(list_models())
-            except Exception:
-                models = []
+            models = self.extract_model_ids(list_models())
+        except Exception:
+            if not allow_default_fallback:
+                raise
+            models = []
+        if allow_default_fallback:
             merged = self.extract_model_ids([*models, *DEFAULT_INTERNAL_MODELS])
             return merged or list(DEFAULT_INTERNAL_MODELS)
-        with self._lock:
-            channel = next((dict(item) for item in self._current_channels() if item.get("id") == normalized_id), None)
-        if channel is None:
-            return None
+        if not models:
+            raise RuntimeError("internal model response contains no models")
+        return models
 
+    def _find_external_channel(self, channel_id: str) -> dict[str, object] | None:
+        with self._lock:
+            return next((dict(item) for item in self._current_channels() if item.get("id") == channel_id), None)
+
+    def _fetch_external_channel_models(self, channel: dict[str, object]) -> list[str]:
         base_url = _clean(channel.get("base_url")).rstrip("/")
         if not base_url:
             raise ValueError("channel base_url is required")
@@ -297,6 +319,53 @@ class ChannelService:
         if not models:
             raise RuntimeError("channel model response contains no models")
         return models
+
+    def fetch_channel_models(self, channel_id: str) -> list[str] | None:
+        normalized_id = _clean(channel_id)
+        if normalized_id == "internal_pool":
+            return self._fetch_internal_channel_models(allow_default_fallback=True)
+        channel = self._find_external_channel(normalized_id)
+        if channel is None:
+            return None
+        return self._fetch_external_channel_models(channel)
+
+    def test_channel_models(self, channel_id: str, models: object = None) -> dict[str, object] | None:
+        normalized_id = _clean(channel_id)
+        requested_models = _requested_models(models)
+        started_at = time.monotonic()
+        channel = self._internal_channel() if normalized_id == "internal_pool" else self._find_external_channel(normalized_id)
+        if channel is None:
+            return None
+        try:
+            if normalized_id == "internal_pool":
+                models = self._fetch_internal_channel_models(allow_default_fallback=False)
+            else:
+                models = self._fetch_external_channel_models(channel)
+            model_set = set(models)
+            tested_models = requested_models or models
+            missing_models = [model for model in requested_models if model not in model_set]
+            ok = not missing_models
+            return {
+                "ok": ok,
+                "channel": self._internal_channel() if normalized_id == "internal_pool" else self._public(channel),
+                "models": models,
+                "model_count": len(models),
+                "tested_models": tested_models,
+                "missing_models": missing_models,
+                "latency_ms": int((time.monotonic() - started_at) * 1000),
+                "error": "" if ok else f"models unavailable: {', '.join(missing_models)}",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "channel": self._internal_channel() if normalized_id == "internal_pool" else self._public(channel),
+                "models": [],
+                "model_count": 0,
+                "tested_models": requested_models,
+                "missing_models": requested_models,
+                "latency_ms": int((time.monotonic() - started_at) * 1000),
+                "error": str(exc),
+            }
 
     def refresh_channel_models(self, channel_id: str) -> dict[str, object] | None:
         normalized_id = _clean(channel_id)

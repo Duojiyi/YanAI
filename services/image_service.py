@@ -106,6 +106,11 @@ def _record_id(record: dict[str, object]) -> str:
     return _clean(record.get("record_id") or record.get("id"))
 
 
+def _record_owner_matches(record: dict[str, object], owner_user_id: str) -> bool:
+    normalized_owner = _clean(owner_user_id)
+    return not normalized_owner or _clean(record.get("owner_user_id")) == normalized_owner
+
+
 def _local_image_path_from_url(url: str) -> Path | None:
     parsed_path = unquote(urlparse(_clean(url)).path)
     if not parsed_path.startswith("/images/"):
@@ -289,6 +294,7 @@ def delete_images(
     *,
     record_ids: list[str] | tuple[str, ...] | None = None,
     urls: list[str] | tuple[str, ...] | None = None,
+    owner_user_id: str = "",
 ) -> dict[str, object]:
     requested_ids = set(_dedupe_text(record_ids))
     requested_urls = set(_dedupe_text(urls))
@@ -311,6 +317,9 @@ def delete_images(
     remaining_records: list[dict[str, object]] = []
     for record in records:
         if not isinstance(record, dict):
+            continue
+        if not _record_owner_matches(record, owner_user_id):
+            remaining_records.append(record)
             continue
         record_id = _record_id(record)
         record_url = _clean(record.get("url"))
@@ -336,7 +345,11 @@ def delete_images(
         for record in matched_records
         if not isinstance(storage, ImageRecordRepository) or _record_id(record) in removed_record_id_set
     ]
-    urls_to_delete = _dedupe_text([*requested_urls, *record_urls])
+    if owner_user_id:
+        remaining_urls = {_clean(record.get("url")) for record in remaining_records if isinstance(record, dict)}
+        urls_to_delete = [url for url in _dedupe_text(record_urls) if url not in remaining_urls]
+    else:
+        urls_to_delete = _dedupe_text([*requested_urls, *record_urls])
     removed_file_urls = [url for url in urls_to_delete if _delete_local_image_file(url)]
 
     removed_images: set[str] = set()
@@ -354,6 +367,73 @@ def delete_images(
         "ids": removed_record_ids,
         "urls": removed_file_urls,
     }
+
+
+def _safe_download_name(record: dict[str, object], path: Path) -> str:
+    name = Path(_clean(record.get("name")) or path.name).name
+    if not name or name in {".", ".."}:
+        name = path.name
+    sanitized = "".join(ch if ch.isalnum() or ch in {" ", ".", "_", "-"} else "-" for ch in name).strip(" .")
+    return sanitized or path.name or "image.png"
+
+
+def _unique_name(name: str, used: set[str]) -> str:
+    candidate = name
+    path = Path(name)
+    stem = path.stem or "image"
+    suffix = path.suffix or ".png"
+    index = 2
+    while candidate in used:
+        candidate = f"{stem}-{index}{suffix}"
+        index += 1
+    used.add(candidate)
+    return candidate
+
+
+def collect_downloadable_images(
+    *,
+    record_ids: list[str] | tuple[str, ...] | None = None,
+    urls: list[str] | tuple[str, ...] | None = None,
+    owner_user_id: str = "",
+) -> list[dict[str, object]]:
+    requested_ids = set(_dedupe_text(record_ids))
+    requested_urls = set(_dedupe_text(urls))
+    if not requested_ids and not requested_urls:
+        return []
+
+    storage = _image_record_source()
+    try:
+        records = storage.list() if isinstance(storage, ImageRecordRepository) else storage.load_image_records()
+    except Exception:
+        records = []
+
+    used_names: set[str] = set()
+    downloads: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or not _record_owner_matches(record, owner_user_id):
+            continue
+        record_id = _record_id(record)
+        record_url = _clean(record.get("url"))
+        if not ((record_id and record_id in requested_ids) or (record_url and record_url in requested_urls)):
+            continue
+        path = _local_image_path_from_url(record_url)
+        if path is None:
+            continue
+        try:
+            resolved_path = str(path.resolve())
+            if resolved_path in seen_paths or not path.is_file() or path.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        seen_paths.add(resolved_path)
+        downloads.append({
+            "id": record_id,
+            "url": record_url,
+            "path": path,
+            "name": _unique_name(_safe_download_name(record, path), used_names),
+        })
+    return downloads
 
 
 def record_image_result(

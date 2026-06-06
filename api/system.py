@@ -53,6 +53,7 @@ class ImagesWebDAVSyncRequest(BaseModel):
     user_id: str = ""
     channel: str = ""
     request_id: str = ""
+    ids: list[str] = Field(default_factory=list)
 
 
 def create_router(app_version: str) -> APIRouter:
@@ -235,6 +236,7 @@ def create_router(app_version: str) -> APIRouter:
                     "owner_user_id": body.user_id.strip(),
                     "channel": body.channel.strip(),
                     "request_id": body.request_id.strip(),
+                    "record_ids": [item.strip() for item in body.ids if item.strip()],
                 },
             )
         except ValueError as exc:

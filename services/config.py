@@ -460,7 +460,7 @@ class ConfigStore:
         """获取存储后端实例（单例）"""
         if self._storage_backend is None:
             from services.storage.factory import create_storage_backend
-            self._storage_backend = create_storage_backend(DATA_DIR)
+            self._storage_backend = create_storage_backend(DATA_DIR, self.data)
         return self._storage_backend
 
     def get_repository_provider(self) -> RepositoryProvider | None:

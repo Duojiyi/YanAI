@@ -221,6 +221,142 @@ class ImageServiceTests(unittest.TestCase):
         self.assertEqual(result["removed_files"], 1)
         self.assertFalse(image_path.exists())
 
+    def test_delete_images_owner_filter_prevents_unowned_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = Path(tmp_dir) / "images"
+            owned_path = images_dir / "2026" / "05" / "25" / "owned.png"
+            other_path = images_dir / "2026" / "05" / "25" / "other.png"
+            owned_path.parent.mkdir(parents=True)
+            owned_path.write_bytes(b"owned-image")
+            other_path.write_bytes(b"other-image")
+            records = [
+                {
+                    "id": "image-owned",
+                    "record_id": "image-owned",
+                    "owner_user_id": "user-a",
+                    "url": "http://127.0.0.1:8000/images/2026/05/25/owned.png",
+                    "created_at": "2026-05-25 12:00:00",
+                },
+                {
+                    "id": "image-other",
+                    "record_id": "image-other",
+                    "owner_user_id": "user-b",
+                    "url": "http://127.0.0.1:8000/images/2026/05/25/other.png",
+                    "created_at": "2026-05-25 13:00:00",
+                },
+            ]
+
+            def save_image_records(next_records: list[dict[str, object]]) -> None:
+                records[:] = next_records
+
+            fake_storage = SimpleNamespace(
+                load_image_records=lambda: records,
+                save_image_records=save_image_records,
+            )
+            fake_config = SimpleNamespace(
+                images_dir=images_dir,
+                get_storage_backend=lambda: fake_storage,
+            )
+
+            with mock.patch.object(image_service, "config", fake_config):
+                result = image_service.delete_images(
+                    record_ids=["image-other"],
+                    urls=["http://127.0.0.1:8000/images/2026/05/25/other.png"],
+                    owner_user_id="user-a",
+                )
+
+            self.assertEqual(result["removed"], 0)
+            self.assertEqual(result["removed_records"], 0)
+            self.assertEqual(result["removed_files"], 0)
+            self.assertTrue(owned_path.exists())
+            self.assertTrue(other_path.exists())
+            self.assertEqual([record["id"] for record in records], ["image-owned", "image-other"])
+
+    def test_delete_images_owner_filter_keeps_file_used_by_other_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = Path(tmp_dir) / "images"
+            shared_path = images_dir / "2026" / "05" / "25" / "shared.png"
+            shared_path.parent.mkdir(parents=True)
+            shared_path.write_bytes(b"shared-image")
+            shared_url = "http://127.0.0.1:8000/images/2026/05/25/shared.png"
+            records = [
+                {
+                    "id": "image-owned",
+                    "record_id": "image-owned",
+                    "owner_user_id": "user-a",
+                    "url": shared_url,
+                    "created_at": "2026-05-25 12:00:00",
+                },
+                {
+                    "id": "image-other",
+                    "record_id": "image-other",
+                    "owner_user_id": "user-b",
+                    "url": shared_url,
+                    "created_at": "2026-05-25 13:00:00",
+                },
+            ]
+
+            def save_image_records(next_records: list[dict[str, object]]) -> None:
+                records[:] = next_records
+
+            fake_storage = SimpleNamespace(
+                load_image_records=lambda: records,
+                save_image_records=save_image_records,
+            )
+            fake_config = SimpleNamespace(
+                images_dir=images_dir,
+                get_storage_backend=lambda: fake_storage,
+            )
+
+            with mock.patch.object(image_service, "config", fake_config):
+                result = image_service.delete_images(record_ids=["image-owned"], owner_user_id="user-a")
+
+            self.assertEqual(result["removed"], 1)
+            self.assertEqual(result["removed_records"], 1)
+            self.assertEqual(result["removed_files"], 0)
+            self.assertTrue(shared_path.exists())
+            self.assertEqual([record["id"] for record in records], ["image-other"])
+
+    def test_collect_downloadable_images_respects_owner_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = Path(tmp_dir) / "images"
+            owned_path = images_dir / "2026" / "05" / "25" / "owned.png"
+            other_path = images_dir / "2026" / "05" / "25" / "other.png"
+            owned_path.parent.mkdir(parents=True)
+            owned_path.write_bytes(b"owned-image")
+            other_path.write_bytes(b"other-image")
+            records = [
+                {
+                    "id": "image-owned",
+                    "record_id": "image-owned",
+                    "owner_user_id": "user-a",
+                    "url": "http://127.0.0.1:8000/images/2026/05/25/owned.png",
+                    "created_at": "2026-05-25 12:00:00",
+                },
+                {
+                    "id": "image-other",
+                    "record_id": "image-other",
+                    "owner_user_id": "user-b",
+                    "url": "http://127.0.0.1:8000/images/2026/05/25/other.png",
+                    "created_at": "2026-05-25 13:00:00",
+                },
+            ]
+            fake_storage = SimpleNamespace(load_image_records=lambda: records)
+            fake_config = SimpleNamespace(
+                images_dir=images_dir,
+                get_storage_backend=lambda: fake_storage,
+            )
+
+            with mock.patch.object(image_service, "config", fake_config):
+                downloads = image_service.collect_downloadable_images(
+                    record_ids=["image-owned", "image-other"],
+                    owner_user_id="user-a",
+                )
+
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(downloads[0]["id"], "image-owned")
+        self.assertEqual(downloads[0]["path"], owned_path)
+
     def test_record_image_result_inserts_without_loading_repository(self) -> None:
         repository = InsertOnlyImageRecordRepository()
         fake_config = SimpleNamespace(

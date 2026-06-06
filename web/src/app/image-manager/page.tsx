@@ -166,6 +166,13 @@ function ImageManagerContent() {
       toast.error("请先启用 WebDAV 配置");
       return;
     }
+    const selectedIds = selectedTargets
+      .map((item) => item.record_id || item.id || "")
+      .filter((value) => value.trim());
+    if (selectedTargets.length > 0 && selectedIds.length === 0) {
+      toast.error("选中的图片没有可同步的记录 ID");
+      return;
+    }
     setIsSyncingWebDAV(true);
     try {
       const data = await syncImagesToWebDAV({
@@ -173,9 +180,11 @@ function ImageManagerContent() {
         end_date: endDate,
         user_id: userId.trim(),
         channel: channel.trim(),
+        ids: selectedIds,
       });
       const result = data.result;
-      toast.success(`已同步 ${result.uploaded} 张，跳过 ${result.skipped} 张，失败 ${result.failed} 张`);
+      const scopeText = selectedIds.length > 0 ? "所选图片" : "筛选范围";
+      toast.success(`${scopeText}已同步 ${result.uploaded} 张，跳过 ${result.skipped} 张，失败 ${result.failed} 张`);
       await loadImages();
       await loadWebDAVConfig();
     } catch (error) {

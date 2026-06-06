@@ -61,11 +61,26 @@ request.interceptors.response.use(
             }
         }
 
-        const payload = error.response?.data;
+        let payload: ErrorPayload | Blob | undefined = error.response?.data;
+        if (typeof Blob !== "undefined" && payload instanceof Blob) {
+            try {
+                const text = await payload.text();
+                if (text) {
+                    try {
+                        payload = JSON.parse(text) as ErrorPayload;
+                    } catch {
+                        payload = {message: text};
+                    }
+                }
+            } catch {
+                payload = undefined;
+            }
+        }
+        const errorPayload = payload as ErrorPayload | undefined;
         const message =
-            errorMessageFromValue(payload?.detail) ||
-            errorMessageFromValue(payload?.error) ||
-            payload?.message ||
+            errorMessageFromValue(errorPayload?.detail) ||
+            errorMessageFromValue(errorPayload?.error) ||
+            errorPayload?.message ||
             error.message ||
             `请求失败 (${status || 500})`;
         return Promise.reject(new Error(message));
@@ -77,16 +92,18 @@ type RequestOptions = {
     body?: unknown;
     headers?: Record<string, string>;
     redirectOnUnauthorized?: boolean;
+    responseType?: AxiosRequestConfig["responseType"];
 };
 
 export async function httpRequest<T>(path: string, options: RequestOptions = {}) {
-    const {method = "GET", body, headers, redirectOnUnauthorized = true} = options;
+    const {method = "GET", body, headers, redirectOnUnauthorized = true, responseType} = options;
     const config: RequestConfig = {
         url: path,
         method,
         data: body,
         headers,
         redirectOnUnauthorized,
+        responseType,
     };
     const response = await request.request<T>(config);
     return response.data;

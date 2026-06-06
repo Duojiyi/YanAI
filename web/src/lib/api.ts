@@ -563,6 +563,7 @@ export async function syncImagesToWebDAV(filters: {
   user_id?: string;
   channel?: string;
   request_id?: string;
+  ids?: string[];
 }) {
   return httpRequest<{ result: ImageWebDAVSyncResult }>("/api/images/webdav/sync", {
     method: "POST",
@@ -697,6 +698,24 @@ export async function fetchMyImages(filters: {
   return httpRequest<ImageListResponse>(`/api/me/images${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
+export async function deleteMyImages(items: ManagedImageDeleteTarget[]) {
+  return httpRequest<{ removed: number; removed_records: number; removed_files: number; ids: string[]; urls: string[] }>(
+    "/api/me/images",
+    {
+      method: "DELETE",
+      body: { items },
+    },
+  );
+}
+
+export async function downloadMyImages(items: ManagedImageDeleteTarget[]) {
+  return httpRequest<Blob>("/api/me/images/download", {
+    method: "POST",
+    body: { items },
+    responseType: "blob",
+  });
+}
+
 export async function fetchMyImagesWebDAVConfig() {
   return httpRequest<{ webdav: ImageWebDAVConfig }>("/api/me/images/webdav");
 }
@@ -711,6 +730,7 @@ export async function updateMyImagesWebDAVConfig(payload: ImageWebDAVConfigPaylo
 export async function syncMyImagesToWebDAV(filters: {
   start_date?: string;
   end_date?: string;
+  ids?: string[];
 }) {
   return httpRequest<{ result: ImageWebDAVSyncResult }>("/api/me/images/webdav/sync", {
     method: "POST",
@@ -893,6 +913,17 @@ export type Channel = {
   updated_at?: string | null;
 };
 
+export type ChannelModelTestResult = {
+  ok: boolean;
+  channel: Channel;
+  models: string[];
+  model_count: number;
+  tested_models: string[];
+  missing_models: string[];
+  latency_ms: number;
+  error: string;
+};
+
 export type ModelPricing = {
   model: string;
   enabled: boolean;
@@ -998,6 +1029,13 @@ export async function refreshChannelModels(channelId: string) {
     `/api/admin/channels/${channelId}/models/refresh`,
     { method: "POST" },
   );
+}
+
+export async function testChannelModels(channelId: string, models: string[] = []) {
+  return httpRequest<ChannelModelTestResult>(`/api/admin/channels/${channelId}/models/test`, {
+    method: "POST",
+    body: { models },
+  });
 }
 
 export async function fetchRegisterConfig() {

@@ -79,6 +79,13 @@ def _dedupe_models(models: list[str]) -> list[str]:
     return result
 
 
+def _response_preview(response, limit: int = 300) -> str:
+    text = _clean(getattr(response, "text", ""))
+    if text:
+        return text[:limit]
+    return ""
+
+
 class ChannelService:
     def __init__(self, storage: StorageBackend | RepositoryProvider, config_store=None):
         self.repositories = storage if isinstance(storage, RepositoryProvider) else None
@@ -417,15 +424,20 @@ class ChannelService:
             return next((dict(item) for item in self._current_channels() if item.get("id") == channel_id), None)
 
     def _fetch_external_channel_models(self, channel: dict[str, object]) -> list[str]:
-        base_url = _clean(channel.get("base_url")).rstrip("/")
-        if not base_url:
-            raise ValueError("channel base_url is required")
+        url = self._openai_compatible_url(channel, "/v1/models")
         response = self._session(channel).get(
-            f"{base_url}/v1/models",
+            url,
             timeout=int(channel.get("timeout") or 60),
         )
         if not response.ok:
-            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
+            detail = _response_preview(response)
+            suffix = f"：{detail}" if detail else ""
+            if int(response.status_code) in {404, 405}:
+                raise RuntimeError(
+                    f"渠道模型列表接口不可用：GET /v1/models 返回 HTTP {response.status_code}{suffix}。"
+                    "该渠道可能不支持模型列表接口；可保存渠道后直接生图，或更换支持 /v1/models 的 OpenAI 兼容地址。"
+                )
+            raise RuntimeError(f"模型列表请求失败：HTTP {response.status_code}{suffix}")
         try:
             payload = response.json()
         except Exception as exc:
@@ -643,7 +655,7 @@ class ChannelService:
         if "model" not in body:
             body["model"] = (channel.get("models") or ["gpt-image-1"])[0]
         response = self._session(channel).post(
-            f"{_clean(channel.get('base_url')).rstrip('/')}/v1/images/generations",
+            self._openai_compatible_url(channel, "/v1/images/generations"),
             json=body,
             timeout=int(channel.get("timeout") or 60),
         )
@@ -665,7 +677,7 @@ class ChannelService:
             data, filename, content_type = image
             files.append(("image", (filename or f"image-{index}.png", data, content_type or "image/png")))
         response = self._session(channel).post(
-            f"{_clean(channel.get('base_url')).rstrip('/')}/v1/images/edits",
+            self._openai_compatible_url(channel, "/v1/images/edits"),
             data=form_data,
             files=files,
             timeout=int(channel.get("timeout") or 60),
@@ -679,6 +691,16 @@ class ChannelService:
             "Accept": "application/json",
         })
         return session
+
+    @staticmethod
+    def _openai_compatible_url(channel: dict[str, object], path: str) -> str:
+        base_url = _clean(channel.get("base_url")).rstrip("/")
+        if not base_url:
+            raise ValueError("channel base_url is required")
+        normalized_path = "/" + _clean(path).lstrip("/")
+        if base_url.lower().endswith("/v1") and normalized_path.startswith("/v1/"):
+            normalized_path = normalized_path[3:]
+        return f"{base_url}{normalized_path}"
 
     @staticmethod
     def _normalize_response(response, original_payload: dict[str, Any]) -> dict[str, Any]:

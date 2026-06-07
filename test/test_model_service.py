@@ -136,6 +136,50 @@ class ModelServiceTest(unittest.TestCase):
             self.assertEqual(failed["tested_models"], ["remote-model"])
             self.assertIn("models unavailable", failed["error"])
 
+    def test_channel_urls_accept_base_url_with_or_without_v1(self) -> None:
+        self.assertEqual(
+            ChannelService._openai_compatible_url({"base_url": "https://api.example.test"}, "/v1/models"),
+            "https://api.example.test/v1/models",
+        )
+        self.assertEqual(
+            ChannelService._openai_compatible_url({"base_url": "https://api.example.test/v1"}, "/v1/models"),
+            "https://api.example.test/v1/models",
+        )
+
+    def test_model_list_unsupported_status_gets_helpful_error(self) -> None:
+        class FakeResponse:
+            ok = False
+            status_code = 405
+            text = "Method Not Allowed"
+
+        class FakeSession:
+            def get(self, url, timeout):
+                return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
+            storage.save_channels(
+                [
+                    {
+                        "id": "channel-a",
+                        "name": "A",
+                        "base_url": "https://a.example",
+                        "api_key": "sk-test",
+                        "models": ["configured-model"],
+                    }
+                ]
+            )
+            service = ChannelService(storage, FakeConfigStore())
+            service._session = lambda channel: FakeSession()  # type: ignore[method-assign]
+
+            result = service.test_channel_models("channel-a", ["configured-model"])
+
+            self.assertIsNotNone(result)
+            self.assertFalse(result["ok"])
+            self.assertIn("渠道模型列表接口不可用", result["error"])
+            self.assertIn("GET /v1/models", result["error"])
+            self.assertIn("HTTP 405", result["error"])
+
     def test_external_channel_matches_mapped_image_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")

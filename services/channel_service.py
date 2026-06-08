@@ -86,6 +86,21 @@ def _response_preview(response, limit: int = 300) -> str:
     return ""
 
 
+def _friendly_channel_error(error: object) -> str:
+    message = _clean(error)
+    normalized = message.lower()
+    if "curl: (35)" in normalized or "connection was reset" in normalized or "recv failure" in normalized:
+        return (
+            "连接被上游重置（curl 35）。请检查个人渠道 Base URL 是否正确、API Key 是否有效、"
+            "该渠道是否允许当前网络访问；如果系统设置里配置了代理，也请确认代理可用。"
+        )
+    if "curl: (28)" in normalized or "timed out" in normalized or "timeout" in normalized:
+        return "连接个人渠道超时。请检查渠道地址、代理或把个人渠道超时秒数调大后重试。"
+    if "proxy" in normalized and ("connect" in normalized or "failed" in normalized or "refused" in normalized):
+        return "代理连接失败。请检查系统设置里的代理地址是否可用，或暂时清空代理后重试个人渠道。"
+    return message
+
+
 class ChannelService:
     def __init__(self, storage: StorageBackend | RepositoryProvider, config_store=None):
         self.repositories = storage if isinstance(storage, RepositoryProvider) else None
@@ -276,6 +291,17 @@ class ChannelService:
             owner_user_id: str = "",
     ) -> list[dict[str, object]]:
         channels: list[dict[str, object]] = []
+        if isinstance(personal_channel, dict) and _bool(personal_channel.get("enabled"), False):
+            personal = self._normalize_personal_channel(
+                personal_channel,
+                owner_user_id=owner_user_id,
+                require_enabled=True,
+            )
+            if personal is None:
+                return []
+            if self._resolve_external_model_for_channel(personal, model):
+                return [personal]
+            return []
         personal = self._normalize_personal_channel(
             personal_channel,
             owner_user_id=owner_user_id,
@@ -285,6 +311,32 @@ class ChannelService:
             channels.append(personal)
         channels.extend(self._enabled_external_channels(model))
         return channels
+
+    def _personal_channel_error(
+            self,
+            model: str | None,
+            personal_channel: object = None,
+            *,
+            owner_user_id: str = "",
+    ) -> str:
+        if not isinstance(personal_channel, dict) or not _bool(personal_channel.get("enabled"), False):
+            return ""
+        personal = self._normalize_personal_channel(
+            personal_channel,
+            owner_user_id=owner_user_id,
+            require_enabled=True,
+        )
+        if personal is None:
+            return "personal image channel is enabled but base_url and api_key are required"
+        if not self._resolve_external_model_for_channel(personal, model):
+            requested = _clean(model) or "default"
+            return f"personal image channel does not support requested model: {requested}"
+        return ""
+
+    @staticmethod
+    def _mark_personal_channel_error(payload: dict[str, Any], error: str) -> None:
+        payload["_personal_channel_error"] = error
+        payload["_channel_error"] = error
 
     @staticmethod
     def _channel_result_name(channel: dict[str, object]) -> str:
@@ -605,6 +657,18 @@ class ChannelService:
     def call_generation(self, payload: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
         model = _clean(payload.get("model")) or "gpt-image-2"
         errors: list[str] = []
+        personal_error = self._personal_channel_error(
+            model,
+            payload.get("_personal_image_channel"),
+            owner_user_id=_clean(payload.get("_owner_user_id")),
+        )
+        if personal_error:
+            self._mark_personal_channel_error(payload, personal_error)
+            return None
+        personal_required = (
+            isinstance(payload.get("_personal_image_channel"), dict)
+            and _bool(payload["_personal_image_channel"].get("enabled"), False)
+        )
         for channel in self._enabled_personal_and_external_channels(
                 model,
                 payload.get("_personal_image_channel"),
@@ -615,18 +679,32 @@ class ChannelService:
             try:
                 return self._call_generation(channel, routed_payload), self._channel_result_name(channel)
             except Exception as exc:
-                error = str(exc)
+                error = _friendly_channel_error(exc)
                 errors.append(f"{self._channel_result_name(channel)}: {error}")
                 print(f"[channel] generation failed channel={channel.get('name')} error={error}")
         if errors:
             message = "; ".join(errors)
             print(f"[channel] all external generation channels failed: {message}")
             payload["_channel_error"] = message
+            if personal_required:
+                payload["_personal_channel_error"] = message
         return None
 
     def call_edit(self, payload: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
         model = _clean(payload.get("model")) or "gpt-image-2"
         errors: list[str] = []
+        personal_error = self._personal_channel_error(
+            model,
+            payload.get("_personal_image_channel"),
+            owner_user_id=_clean(payload.get("_owner_user_id")),
+        )
+        if personal_error:
+            self._mark_personal_channel_error(payload, personal_error)
+            return None
+        personal_required = (
+            isinstance(payload.get("_personal_image_channel"), dict)
+            and _bool(payload["_personal_image_channel"].get("enabled"), False)
+        )
         for channel in self._enabled_personal_and_external_channels(
                 model,
                 payload.get("_personal_image_channel"),
@@ -637,13 +715,15 @@ class ChannelService:
             try:
                 return self._call_edit(channel, routed_payload), self._channel_result_name(channel)
             except Exception as exc:
-                error = str(exc)
+                error = _friendly_channel_error(exc)
                 errors.append(f"{self._channel_result_name(channel)}: {error}")
                 print(f"[channel] edit failed channel={channel.get('name')} error={error}")
         if errors:
             message = "; ".join(errors)
             print(f"[channel] all external edit channels failed: {message}")
             payload["_channel_error"] = message
+            if personal_required:
+                payload["_personal_channel_error"] = message
         return None
 
     def _call_generation(self, channel: dict[str, object], payload: dict[str, Any]) -> dict[str, Any]:

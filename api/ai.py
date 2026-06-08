@@ -123,6 +123,14 @@ def create_router() -> APIRouter:
                 detail={"error": message},
             )
 
+    def require_personal_channel_success(payload: dict[str, object]) -> None:
+        personal_error = str(payload.get("_personal_channel_error") or "").strip()
+        if personal_error:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": f"personal image channel failed: {personal_error}"},
+            )
+
     @router.get("/v1/models")
     async def list_models(authorization: str | None = Header(default=None)):
         require_identity(authorization)
@@ -171,6 +179,7 @@ def create_router() -> APIRouter:
                     )
                     finalize_quota(quota_request_id, count)
                     return result
+            require_personal_channel_success(payload)
             require_internal_pool_enabled(payload.get("_channel_error"))
             result = await call.run(openai_v1_image_generations.handle, payload)
             count = 0
@@ -258,6 +267,7 @@ def create_router() -> APIRouter:
                     )
                     finalize_quota(quota_request_id, count)
                     return result
+            require_personal_channel_success(payload)
             require_internal_pool_enabled(payload.get("_channel_error"))
             result = await call.run(openai_v1_image_edit.handle, payload)
             count = 0

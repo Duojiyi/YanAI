@@ -297,7 +297,7 @@ class ModelServiceTest(unittest.TestCase):
             self.assertEqual(calls, ["personal_image_channel:user-a"])
             self.assertEqual(routed[1], "个人渠道/Mine")
 
-    def test_personal_generation_channel_falls_back_to_global_channel(self) -> None:
+    def test_personal_generation_channel_does_not_fall_back_to_global_channel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
             storage.save_channels(
@@ -313,34 +313,77 @@ class ModelServiceTest(unittest.TestCase):
             )
             service = ChannelService(storage, FakeConfigStore())
             calls: list[str] = []
+            payload = {
+                "prompt": "draw",
+                "model": "gpt-image-2",
+                "n": 1,
+                "_owner_user_id": "user-a",
+                "_personal_image_channel": {
+                    "enabled": True,
+                    "name": "Mine",
+                    "base_url": "https://personal.example",
+                    "api_key": "sk-personal",
+                    "models": ["gpt-image-2"],
+                },
+            }
 
             def fake_generation(channel, payload):
                 channel_id = str(channel.get("id"))
                 calls.append(channel_id)
                 if channel_id.startswith("personal_image_channel:"):
-                    raise RuntimeError("personal channel down")
+                    raise RuntimeError("Failed to perform, curl: (35) Recv failure: Connection was reset.")
                 return {"created": 1, "data": [{"url": "https://global.example/image.png"}]}
 
             service._call_generation = fake_generation  # type: ignore[method-assign]
-            routed = service.call_generation(
-                {
-                    "prompt": "draw",
-                    "model": "gpt-image-2",
-                    "n": 1,
-                    "_owner_user_id": "user-a",
-                    "_personal_image_channel": {
-                        "enabled": True,
-                        "name": "Mine",
-                        "base_url": "https://personal.example",
-                        "api_key": "sk-personal",
-                        "models": ["gpt-image-2"],
-                    },
-                }
-            )
+            routed = service.call_generation(payload)
 
-            self.assertIsNotNone(routed)
-            self.assertEqual(calls, ["personal_image_channel:user-a", "channel-a"])
-            self.assertEqual(routed[1], "Global")
+            self.assertIsNone(routed)
+            self.assertEqual(calls, ["personal_image_channel:user-a"])
+            self.assertIn("个人渠道/Mine: 连接被上游重置", payload["_personal_channel_error"])
+
+    def test_personal_edit_channel_does_not_fall_back_to_global_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
+            storage.save_channels(
+                [
+                    {
+                        "id": "channel-a",
+                        "name": "Global",
+                        "base_url": "https://global.example",
+                        "api_key": "sk-global",
+                        "models": ["gpt-image-2"],
+                    }
+                ]
+            )
+            service = ChannelService(storage, FakeConfigStore())
+            calls: list[str] = []
+            payload = {
+                "prompt": "draw",
+                "model": "gpt-image-2",
+                "n": 1,
+                "_owner_user_id": "user-a",
+                "_personal_image_channel": {
+                    "enabled": True,
+                    "name": "Mine",
+                    "base_url": "https://personal.example",
+                    "api_key": "sk-personal",
+                    "models": ["gpt-image-2"],
+                },
+            }
+
+            def fake_edit(channel, routed_payload):
+                channel_id = str(channel.get("id"))
+                calls.append(channel_id)
+                if channel_id.startswith("personal_image_channel:"):
+                    raise RuntimeError("Failed to perform, curl: (35) Recv failure: Connection was reset.")
+                return {"created": 1, "data": [{"url": "https://global.example/image.png"}]}
+
+            service._call_edit = fake_edit  # type: ignore[method-assign]
+            routed = service.call_edit(payload)
+
+            self.assertIsNone(routed)
+            self.assertEqual(calls, ["personal_image_channel:user-a"])
+            self.assertIn("个人渠道/Mine: 连接被上游重置", payload["_personal_channel_error"])
 
     def test_channel_model_test_accepts_mapped_requested_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

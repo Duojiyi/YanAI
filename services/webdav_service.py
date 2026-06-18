@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -11,6 +10,7 @@ from urllib.request import Request, build_opener
 
 from services.config import config
 from services.repositories.base import ImageRecordRepository, RepositoryProvider
+from utils.timezone import china_now_text
 
 ADMIN_CONFIG_KEY = "image_webdav_config"
 USER_CONFIG_KEY = "webdav_config"
@@ -29,7 +29,7 @@ def _bool(value: object, default: bool = False) -> bool:
 
 
 def _now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return china_now_text()
 
 
 def _normalize_path(value: object) -> str:

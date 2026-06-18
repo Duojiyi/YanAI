@@ -116,6 +116,7 @@ class WebDAVServiceTests(unittest.TestCase):
             with (
                 mock.patch.object(webdav_service, "config", fake_config),
                 mock.patch.object(webdav_service, "_request", side_effect=fake_request),
+                mock.patch.object(webdav_service, "china_now_text", return_value="2026-06-05 20:00:00"),
             ):
                 result = webdav_service.sync_images_to_webdav(
                     scope="admin",
@@ -127,6 +128,7 @@ class WebDAVServiceTests(unittest.TestCase):
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["total"], 1)
         self.assertEqual(records[0]["webdav_status"], "synced")
+        self.assertEqual(records[0]["webdav_synced_at"], "2026-06-05 20:00:00")
         self.assertNotIn("webdav_status", records[1])
         self.assertEqual(
             records[0]["webdav_url"],
@@ -134,6 +136,7 @@ class WebDAVServiceTests(unittest.TestCase):
         )
         self.assertIn(("PUT", "https://dav.example/base/YanAI/2026/06/05/sample.png"), [(method, url) for method, url, _, _ in calls])
         self.assertTrue(any(method == "MKCOL" and url.endswith("/YanAI/2026/06/05") for method, url, _, _ in calls))
+        self.assertEqual(fake_config.data[webdav_service.ADMIN_CONFIG_KEY]["last_sync_at"], "2026-06-05 20:00:00")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 import uuid
 from urllib.parse import unquote, urlparse
@@ -10,6 +9,7 @@ from services.observability import get_current_request_id
 from services.repositories.base import ImageRecordRepository
 from services.storage.base import StorageBackend
 from services.webdav_service import sync_created_records_to_webdav
+from utils.timezone import china_now_text, china_timestamp_text
 
 
 def _clean(value: object) -> str:
@@ -42,15 +42,18 @@ def _record_to_item(record: dict[str, object], base_url: str) -> dict[str, objec
     name = Path(parsed_path).name or record_id or "image.png"
     size = _int_or_zero(record.get("size"))
     image_size = _clean(record.get("image_size"))
+    file_created_at = ""
     if not image_size and record.get("size") is not None and size == 0:
         image_size = _clean(record.get("size"))
     if parsed_path.startswith("/images/"):
         local_path = config.images_dir / parsed_path.removeprefix("/images/")
         if local_path.exists() and local_path.is_file():
-            size = local_path.stat().st_size
+            stat = local_path.stat()
+            size = stat.st_size
+            file_created_at = china_timestamp_text(stat.st_mtime)
             if not url.startswith("http"):
                 url = f"{base_url.rstrip('/')}{parsed_path}"
-    created_at = _clean(record.get("created_at")) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = _clean(record.get("created_at")) or file_created_at or china_now_text()
     day = created_at[:10]
     return {
         "id": record_id,
@@ -221,11 +224,11 @@ def _list_files(base_url: str, start_date: str = "", end_date: str = "", seen_ur
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
-        parts = rel.split("/")
         stat = path.stat()
         if stat.st_size <= 0:
             continue
-        day = "-".join(parts[:3]) if len(parts) >= 4 else datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d")
+        created_at = china_timestamp_text(stat.st_mtime)
+        day = created_at[:10]
         if start_date and day < start_date:
             continue
         if end_date and day > end_date:
@@ -238,7 +241,7 @@ def _list_files(base_url: str, start_date: str = "", end_date: str = "", seen_ur
             "date": day,
             "size": stat.st_size,
             "url": url,
-            "created_at": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": created_at,
         })
     items.sort(key=lambda item: str(item["created_at"]), reverse=True)
     return items
@@ -458,7 +461,7 @@ def record_image_result(
             records = storage.load_image_records()
         except Exception:
             records = []
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = china_now_text()
     owner_role = _clean(identity.get("role"))
     owner_user_id = _clean(identity.get("id")) if owner_role == "user" else ""
     normalized_request_id = _clean(request_id) or get_current_request_id()

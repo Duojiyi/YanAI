@@ -19,6 +19,7 @@ from services.observability import get_current_request_id
 from services.openai_backend_api import OpenAIBackendAPI
 from utils.helper import IMAGE_MODELS, anonymize_token
 from utils.log import logger
+from utils.timezone import china_now_text
 
 
 class ImageGenerationError(Exception):
@@ -65,7 +66,7 @@ def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
     config.cleanup_old_images()
     file_hash = hashlib.md5(image_data).hexdigest()
     filename = f"{file_hash}_{uuid.uuid4().hex}.png"
-    relative_dir = Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
+    relative_dir = Path(*china_now_text()[:10].split("-"))
     file_path = config.images_dir / relative_dir / filename
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_bytes(image_data)
@@ -244,12 +245,38 @@ class ImageOutput:
         return chunk
 
 
-def assistant_message_text(message: dict[str, Any]) -> str:
-    content = message.get("content") or {}
-    parts = content.get("parts") or []
-    if not isinstance(parts, list):
+def content_value_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(content_value_text(item) for item in value)
+    if not isinstance(value, dict):
         return ""
-    return "".join(part for part in parts if isinstance(part, str))
+    for key in ("text", "value", "plain_text"):
+        text = value.get(key)
+        if isinstance(text, str):
+            return text
+    nested_content = value.get("content")
+    nested_text = content_value_text(nested_content)
+    if nested_text:
+        return nested_text
+    parts = value.get("parts")
+    if isinstance(parts, list):
+        return "".join(content_value_text(part) for part in parts)
+    return ""
+
+
+def assistant_message_from_candidate(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    message = candidate.get("message")
+    if isinstance(message, dict):
+        return message
+    if isinstance(candidate.get("author"), dict) and "content" in candidate:
+        return candidate
+    return None
+
+
+def assistant_message_text(message: dict[str, Any]) -> str:
+    return content_value_text(message.get("content"))
 
 
 def strip_history(text: str, history_text: str = "") -> str:
@@ -264,8 +291,8 @@ def assistant_text(event: dict[str, Any], current_text: str = "", history_text: 
     for candidate in (event, event.get("v")):
         if not isinstance(candidate, dict):
             continue
-        message = candidate.get("message")
-        if not isinstance(message, dict):
+        message = assistant_message_from_candidate(candidate)
+        if message is None:
             continue
         role = str((message.get("author") or {}).get("role") or "").strip().lower()
         if role != "assistant":
@@ -280,14 +307,19 @@ def event_assistant_text(event: dict[str, Any], history_text: str = "") -> str:
     for candidate in (event, event.get("v")):
         if not isinstance(candidate, dict):
             continue
-        message = candidate.get("message")
+        message = assistant_message_from_candidate(candidate)
         if isinstance(message, dict) and (message.get("author") or {}).get("role") == "assistant":
             return strip_history(assistant_message_text(message), history_text)
     return ""
 
 
+def is_text_patch_path(path: object) -> bool:
+    text = str(path or "")
+    return bool(re.match(r"^/message/content(?:/(?:text|content)|/parts(?:/\d+)?(?:/(?:text|content))?)?$", text))
+
+
 def apply_text_patch(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
-    if event.get("p") == "/message/content/parts/0":
+    if is_text_patch_path(event.get("p")):
         return apply_patch_op(event, current_text, history_text)
 
     operations = event.get("v")
@@ -313,8 +345,8 @@ def apply_text_patch(event: dict[str, Any], current_text: str = "", history_text
 
 def apply_patch_op(operation: dict[str, Any], current_text: str, history_text: str = "") -> str:
     op = operation.get("o")
-    value = str(operation.get("v") or "")
-    if op == "append":
+    value = content_value_text(operation.get("v"))
+    if op in {"add", "append"}:
         return current_text + value
     if op == "replace":
         return strip_history(value, history_text)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -153,6 +154,26 @@ class ImageServiceTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in result["items"]], ["external-image"])
         self.assertEqual(result["pagination"]["total"], 1)
+
+    def test_list_images_formats_orphan_file_mtime_as_china_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = Path(tmp_dir) / "images"
+            image_path = images_dir / "1969" / "12" / "31" / "orphan.png"
+            image_path.parent.mkdir(parents=True)
+            image_path.write_bytes(b"image-bytes")
+            os.utime(image_path, (0, 0))
+            fake_storage = SimpleNamespace(load_image_records=lambda: [])
+            fake_config = SimpleNamespace(
+                images_dir=images_dir,
+                cleanup_old_images=lambda: 0,
+                get_storage_backend=lambda: fake_storage,
+            )
+
+            with mock.patch.object(image_service, "config", fake_config):
+                result = image_service.list_images("http://127.0.0.1:8000")
+
+        self.assertEqual(result["items"][0]["date"], "1970-01-01")
+        self.assertEqual(result["items"][0]["created_at"], "1970-01-01 08:00:00")
 
     def test_delete_images_removes_record_and_local_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -369,7 +390,10 @@ class ImageServiceTests(unittest.TestCase):
             ]
         }
 
-        with mock.patch.object(image_service, "config", fake_config):
+        with (
+            mock.patch.object(image_service, "config", fake_config),
+            mock.patch.object(image_service, "china_now_text", return_value="2026-05-29 20:15:30"),
+        ):
             created = image_service.record_image_result(
                 {"id": "user-a", "role": "user", "email": "user@example.com"},
                 result,
@@ -383,6 +407,7 @@ class ImageServiceTests(unittest.TestCase):
         self.assertEqual(len(repository.inserted), 2)
         self.assertTrue(repository.inserted[0]["record_id"])
         self.assertEqual(repository.inserted[0]["owner_user_id"], "user-a")
+        self.assertEqual(repository.inserted[0]["created_at"], "2026-05-29 20:15:30")
 
     def test_save_image_bytes_uses_unique_file_names_for_same_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -395,11 +420,7 @@ class ImageServiceTests(unittest.TestCase):
 
             with (
                 mock.patch.object(conversation, "config", fake_config),
-                mock.patch.object(
-                    conversation.time,
-                    "strftime",
-                    side_effect=lambda fmt: {"%Y": "2026", "%m": "05", "%d": "29"}[fmt],
-                ),
+                mock.patch.object(conversation, "china_now_text", return_value="2026-05-29 08:00:00"),
             ):
                 first = conversation.save_image_bytes(b"same-image")
                 second = conversation.save_image_bytes(b"same-image")

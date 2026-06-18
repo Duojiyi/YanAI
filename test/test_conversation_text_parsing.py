@@ -33,6 +33,28 @@ class ConversationTextParsingTests(unittest.TestCase):
 
         self.assertEqual(deltas, ["你", "好"])
 
+    def test_iter_payloads_reads_deep_text_patch_path(self) -> None:
+        payloads = iter([
+            json.dumps({"p": "/message/content/parts/0/content/text", "o": "append", "v": "深层文本"}, ensure_ascii=False),
+            "[DONE]",
+        ])
+
+        events = list(iter_conversation_payloads(payloads))
+        deltas = [event.get("delta") for event in events if event.get("type") == "conversation.delta"]
+
+        self.assertEqual(deltas, ["深层文本"])
+
+    def test_iter_payloads_reads_append_operation_without_path(self) -> None:
+        payloads = iter([
+            json.dumps({"o": "append", "v": "无路径文本"}, ensure_ascii=False),
+            "[DONE]",
+        ])
+
+        events = list(iter_conversation_payloads(payloads))
+        deltas = [event.get("delta") for event in events if event.get("type") == "conversation.delta"]
+
+        self.assertEqual(deltas, ["无路径文本"])
+
     def test_iter_payloads_reads_message_carried_directly_in_v(self) -> None:
         payloads = iter([
             json.dumps({

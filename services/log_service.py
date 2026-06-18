@@ -354,6 +354,13 @@ def _next_item(items):
         return False, None
 
 
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
 @dataclass
 class LoggedCall:
     identity: dict[str, object]
@@ -396,8 +403,12 @@ class LoggedCall:
             raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
         if not has_first:
             self.log("流式调用结束")
-            return StreamingResponse(sender(()), media_type="text/event-stream")
-        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream")
+            return StreamingResponse(sender(()), media_type="text/event-stream", headers=SSE_RESPONSE_HEADERS)
+        return StreamingResponse(
+            sender(self.stream(itertools.chain([first], result))),
+            media_type="text/event-stream",
+            headers=SSE_RESPONSE_HEADERS,
+        )
 
     def stream(self, items):
         urls: list[str] = []

@@ -591,7 +591,7 @@ class AccountService:
     def get_text_access_token(self) -> str:
         for account in self._list_current_accounts():
             status = self._clean_token(account.get("status"))
-            if status not in {"禁用", "异常"}:
+            if status not in {"禁用", "限流", "异常"}:
                 return self._clean_token(account.get("access_token"))
         return ""
 

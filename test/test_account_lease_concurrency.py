@@ -122,6 +122,18 @@ class AccountLeaseConcurrencyTest(unittest.TestCase):
             self.assertEqual(account["fail"], 1)
             storage.close()
 
+    def test_text_access_token_skips_rate_limited_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = DatabaseStorageBackend(f"sqlite:///{(Path(tmp_dir) / 'text-token.db').as_posix()}")
+            service = AccountService(storage.repository_provider)
+            service.add_account_items([
+                {"access_token": "limited-token", "status": "限流", "quota": 0},
+                {"access_token": "normal-token", "status": "正常", "quota": 0},
+            ])
+
+            self.assertEqual(service.get_text_access_token(), "normal-token")
+            storage.close()
+
     def test_generator_close_after_result_releases_lease(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = DatabaseStorageBackend(f"sqlite:///{(Path(tmp_dir) / 'closed.db').as_posix()}")

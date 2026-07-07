@@ -93,7 +93,7 @@ class ModelServiceTest(unittest.TestCase):
             self.assertFalse(service.is_internal_pool_enabled())
             self.assertFalse(service.list_channels()[0]["enabled"])
 
-    def test_channel_model_test_reports_status_without_persisting_models(self) -> None:
+    def test_channel_model_test_generates_without_persisting_models(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
             storage.save_channels(
@@ -108,15 +108,22 @@ class ModelServiceTest(unittest.TestCase):
                 ]
             )
             service = ChannelService(storage, FakeConfigStore())
+            seen: dict[str, object] = {}
 
-            service._fetch_external_channel_models = lambda channel: ["remote-model", "other-model"]  # type: ignore[method-assign]
-            result = service.test_channel_models("channel-a", ["remote-model"])
+            def fake_generation(channel, payload):
+                seen["model"] = payload.get("model")
+                return {"created": 1, "data": [{"url": "https://example.test/image.png"}]}
+
+            service._call_generation = fake_generation  # type: ignore[method-assign]
+            result = service.test_channel_models("channel-a", ["configured-model"])
 
             self.assertIsNotNone(result)
             self.assertTrue(result["ok"])
-            self.assertEqual(result["models"], ["remote-model", "other-model"])
-            self.assertEqual(result["tested_models"], ["remote-model"])
+            self.assertEqual(result["models"], ["configured-model"])
+            self.assertEqual(result["tested_models"], ["configured-model"])
+            self.assertEqual(result["passed_models"], ["configured-model"])
             self.assertEqual(result["missing_models"], [])
+            self.assertEqual(seen["model"], "configured-model")
             self.assertEqual(service.get_channel("channel-a")["models"], ["configured-model"])
 
             missing = service.test_channel_models("channel-a", ["missing-model"])
@@ -126,16 +133,16 @@ class ModelServiceTest(unittest.TestCase):
             self.assertEqual(missing["tested_models"], ["missing-model"])
             self.assertEqual(missing["missing_models"], ["missing-model"])
 
-            def fail_fetch(channel):
-                raise RuntimeError("models unavailable")
+            def fail_generation(channel, payload):
+                raise RuntimeError("generation unavailable")
 
-            service._fetch_external_channel_models = fail_fetch  # type: ignore[method-assign]
-            failed = service.test_channel_models("channel-a", ["remote-model"])
+            service._call_generation = fail_generation  # type: ignore[method-assign]
+            failed = service.test_channel_models("channel-a", ["configured-model"])
 
             self.assertIsNotNone(failed)
             self.assertFalse(failed["ok"])
-            self.assertEqual(failed["tested_models"], ["remote-model"])
-            self.assertIn("models unavailable", failed["error"])
+            self.assertEqual(failed["tested_models"], ["configured-model"])
+            self.assertIn("generation unavailable", failed["error"])
 
     def test_channel_urls_accept_base_url_with_or_without_v1(self) -> None:
         self.assertEqual(
@@ -173,13 +180,13 @@ class ModelServiceTest(unittest.TestCase):
             service = ChannelService(storage, FakeConfigStore())
             service._session = lambda channel: FakeSession()  # type: ignore[method-assign]
 
-            result = service.test_channel_models("channel-a", ["configured-model"])
+            with self.assertRaises(RuntimeError) as raised:
+                service.fetch_channel_models("channel-a")
 
-            self.assertIsNotNone(result)
-            self.assertFalse(result["ok"])
-            self.assertIn("渠道模型列表接口不可用", result["error"])
-            self.assertIn("GET /v1/models", result["error"])
-            self.assertIn("HTTP 405", result["error"])
+            message = str(raised.exception)
+            self.assertIn("渠道模型列表接口不可用", message)
+            self.assertIn("GET /v1/models", message)
+            self.assertIn("HTTP 405", message)
 
     def test_external_channel_matches_mapped_image_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -589,13 +596,20 @@ class ModelServiceTest(unittest.TestCase):
                 ]
             )
             service = ChannelService(storage, FakeConfigStore())
+            seen: dict[str, object] = {}
 
-            service._fetch_external_channel_models = lambda channel: ["gpt-5-5"]  # type: ignore[method-assign]
+            def fake_generation(channel, payload):
+                seen["model"] = payload.get("model")
+                return {"created": 1, "data": [{"url": "https://example.test/image.png"}]}
+
+            service._call_generation = fake_generation  # type: ignore[method-assign]
             result = service.test_channel_models("channel-a", ["gpt-image-2"])
 
             self.assertIsNotNone(result)
             self.assertTrue(result["ok"])
+            self.assertEqual(result["passed_models"], ["gpt-image-2"])
             self.assertEqual(result["missing_models"], [])
+            self.assertEqual(seen["model"], "gpt-5-5")
 
     def test_update_pricing_persists_and_estimates_token_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -23,6 +23,7 @@ import {
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const DEFAULT_CHANNEL_MODELS = "gpt-image-2,codex-gpt-image-2,gpt-5-5";
+const DEFAULT_CHANNEL_TIMEOUT = 300;
 
 type ImageChannelForm = {
   enabled: boolean;
@@ -40,7 +41,7 @@ const emptyImageChannelForm = (): ImageChannelForm => ({
   base_url: "",
   api_key: "",
   models: DEFAULT_CHANNEL_MODELS,
-  timeout: "60",
+  timeout: String(DEFAULT_CHANNEL_TIMEOUT),
   hasApiKey: false,
 });
 
@@ -50,7 +51,7 @@ const channelToForm = (channel?: UserImageChannel | null): ImageChannelForm => (
   base_url: channel?.base_url || "",
   api_key: "",
   models: channel?.models?.join(",") || DEFAULT_CHANNEL_MODELS,
-  timeout: String(channel?.timeout ?? 60),
+  timeout: String(channel?.timeout ?? DEFAULT_CHANNEL_TIMEOUT),
   hasApiKey: Boolean(channel?.has_api_key),
 });
 
@@ -121,7 +122,7 @@ function ProfileContent() {
     base_url: channelForm.base_url.trim(),
     api_key: channelForm.api_key.trim(),
     models: channelForm.models,
-    timeout: toNumber(channelForm.timeout, 60),
+    timeout: toNumber(channelForm.timeout, DEFAULT_CHANNEL_TIMEOUT),
   });
 
   const handleSaveChannel = async () => {
@@ -271,12 +272,12 @@ function ProfileContent() {
               />
             </label>
             <label className="space-y-1.5 text-xs font-semibold text-stone-700">
-              <span>超时秒数</span>
+              <span>生图超时秒数</span>
               <Input
                 type="number"
                 value={channelForm.timeout}
                 onChange={(event) => setChannelForm((current) => ({ ...current, timeout: event.target.value }))}
-                placeholder="60"
+                placeholder={String(DEFAULT_CHANNEL_TIMEOUT)}
                 className="h-10 rounded-xl border-rose-100 bg-white text-sm font-normal"
               />
             </label>

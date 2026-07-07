@@ -200,6 +200,13 @@ class ConfigStore:
             return 1800
 
     @property
+    def image_generation_poll_timeout_seconds(self) -> int:
+        try:
+            return max(60, min(900, int(self._get_config_value("image_generation_poll_timeout_seconds", 300))))
+        except (TypeError, ValueError):
+            return 300
+
+    @property
     def image_retention_days(self) -> int:
         try:
             return max(1, int(self._get_config_value("image_retention_days", 30)))
@@ -402,6 +409,7 @@ class ConfigStore:
         data = self._effective_data()
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["account_lease_ttl_seconds"] = self.account_lease_ttl_seconds
+        data["image_generation_poll_timeout_seconds"] = self.image_generation_poll_timeout_seconds
         data["image_retention_days"] = self.image_retention_days
         data["internal_pool_enabled"] = self.internal_pool_enabled
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts

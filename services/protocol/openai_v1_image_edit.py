@@ -18,9 +18,12 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     model = str(body.get("model") or "gpt-image-2")
     n = int(body.get("n") or 1)
     size = body.get("size")
-    response_format = str(body.get("response_format") or "b64_json")
+    response_format = str(body.get("response_format") or "url")
     base_url = str(body.get("base_url") or "") or None
     request_id = str(body.get("request_id") or "")
+    storage_identity = body.get("_image_storage_identity")
+    if not isinstance(storage_identity, dict):
+        storage_identity = None
     encoded_images = encode_images(images)
     if not encoded_images:
         raise ImageGenerationError("image is required")
@@ -32,6 +35,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         response_format=response_format,
         base_url=base_url,
         request_id=request_id,
+        image_storage_identity=storage_identity,
         images=encoded_images,
         message_as_error=True,
     ))

@@ -211,12 +211,16 @@ def _unique_non_empty(values: list[str]) -> list[str]:
     return result
 
 
+def _mail_config_with_proxy() -> dict:
+    return {**config["mail"], "proxy": str(config.get("proxy") or "").strip()}
+
+
 def create_mailbox(username: str | None = None) -> dict:
-    return mail_provider.create_mailbox(config["mail"], username)
+    return mail_provider.create_mailbox(_mail_config_with_proxy(), username)
 
 
 def wait_for_code(mailbox: dict) -> str | None:
-    return mail_provider.wait_for_code(config["mail"], mailbox)
+    return mail_provider.wait_for_code(_mail_config_with_proxy(), mailbox)
 
 
 class SentinelTokenGenerator:

@@ -640,8 +640,9 @@ class OpenAIBackendAPI:
                  "sediment_ids": sediment_ids})
         return sorted(records, key=lambda item: item["create_time"])
 
-    def _poll_image_results(self, conversation_id: str, timeout_secs: float = 120.0) -> tuple[list[str], list[str]]:
+    def _poll_image_results(self, conversation_id: str, timeout_secs: float | None = None) -> tuple[list[str], list[str]]:
         """轮询 conversation，直到拿到图片文件 id 或超时。"""
+        timeout_secs = float(timeout_secs or config.image_generation_poll_timeout_seconds)
         start = time.time()
         attempt = 0
         logger.info({"event": "image_poll_start", "conversation_id": conversation_id, "timeout_secs": timeout_secs})

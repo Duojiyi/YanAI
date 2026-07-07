@@ -2,6 +2,7 @@
   "auth-key": "change_me_to_a_long_random_secret",
   "refresh_account_interval_minute": 60,
   "image_retention_days": 15,
+  "image_generation_poll_timeout_seconds": 300,
   "internal_pool_enabled": true,
   "auto_remove_rate_limited_accounts": false,
   "auto_remove_invalid_accounts": true,
@@ -12,6 +13,14 @@
   ],
   "proxy": "",
   "base_url": "",
+  "image_webdav_config": {
+    "enabled": false,
+    "url": "",
+    "public_url": "",
+    "username": "",
+    "password": "",
+    "root_path": "YanAI"
+  },
   "allow_user_registration": true,
   "new_user_initial_quota": 0,
   "email_verification_enabled": false,

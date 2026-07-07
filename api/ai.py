@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.support import require_identity, resolve_image_base_url
 from services.auth_service import auth_service
 from services.channel_service import channel_service
 from services.image_service import record_image_result
-from services.log_service import LoggedCall
+from services.log_service import LoggedCall, SSE_RESPONSE_HEADERS
 from services.observability import request_id_from_request
 from services.protocol import (
     anthropic_v1_messages,
@@ -18,6 +19,7 @@ from services.protocol import (
     openai_v1_models,
     openai_v1_response,
 )
+from utils.helper import sse_json_stream
 
 
 class ImageGenerationRequest(BaseModel):
@@ -25,7 +27,7 @@ class ImageGenerationRequest(BaseModel):
     model: str = "gpt-image-2"
     n: int = Field(default=1, ge=1, le=4)
     size: str | None = None
-    response_format: str = "b64_json"
+    response_format: str = "url"
     history_disabled: bool = True
     stream: bool | None = None
 
@@ -129,6 +131,51 @@ def create_router() -> APIRouter:
         )
         return count
 
+    def stream_image_result_recorder(
+            identity: dict[str, object],
+            *,
+            prompt: str,
+            mode: str,
+            model: str,
+            size: str | None,
+            channel: str,
+            request_id: str,
+    ):
+        def record(item: object):
+            if not isinstance(item, dict) or item.get("object") != "image.generation.result":
+                return item
+            result = {
+                "created": item.get("created"),
+                "data": item.get("data") if isinstance(item.get("data"), list) else [],
+            }
+            finalize_image_result(
+                identity,
+                result,
+                prompt=prompt,
+                mode=mode,
+                model=model,
+                size=size,
+                channel=channel,
+                request_id=request_id,
+            )
+            next_item = dict(item)
+            next_item["data"] = result["data"]
+            return next_item
+
+        return record
+
+    def external_image_stream_response(result: dict[str, object]) -> StreamingResponse:
+        data = result.get("data") if isinstance(result.get("data"), list) else []
+        return StreamingResponse(
+            sse_json_stream([{
+                "object": "image.generation.result",
+                "created": result.get("created"),
+                "data": data,
+            }]),
+            media_type="text/event-stream",
+            headers=SSE_RESPONSE_HEADERS,
+        )
+
     def require_internal_pool_enabled(external_error: object = None) -> None:
         if not channel_service.is_internal_pool_enabled():
             message = "internal account pool is disabled and no external channel completed the request"
@@ -175,30 +222,44 @@ def create_router() -> APIRouter:
         payload = body.model_dump(mode="python")
         payload["base_url"] = resolve_image_base_url(request)
         payload["request_id"] = request_id
+        payload["_image_storage_identity"] = identity
         use_personal_quota_free = attach_personal_image_channel(identity, payload, body.model)
         quota_request_id = None if use_personal_quota_free else reserve_image_quota(identity, int(body.n or 1), request_id)
         call = LoggedCall(identity, "/v1/images/generations", body.model, "文生图", request_id=request_id)
         try:
-            if not body.stream:
-                routed = await run_in_threadpool(channel_service.call_generation, payload)
-                if routed is not None:
-                    result, channel_name = routed
-                    call.log("渠道调用完成", result)
-                    count = finalize_image_result(
-                        identity,
-                        result,
-                        prompt=body.prompt,
-                        mode="generate",
-                        model=body.model,
-                        size=body.size,
-                        channel=channel_name,
-                        request_id=request_id,
-                    )
-                    finalize_quota(quota_request_id, count)
-                    return result
+            routed = await run_in_threadpool(channel_service.call_generation, payload)
+            if routed is not None:
+                result, channel_name = routed
+                call.log("渠道调用完成", result)
+                count = finalize_image_result(
+                    identity,
+                    result,
+                    prompt=body.prompt,
+                    mode="generate",
+                    model=body.model,
+                    size=body.size,
+                    channel=channel_name,
+                    request_id=request_id,
+                )
+                finalize_quota(quota_request_id, count)
+                if body.stream:
+                    return external_image_stream_response(result)
+                return result
             require_personal_channel_success(payload)
             require_internal_pool_enabled(payload.get("_channel_error"))
-            result = await call.run(openai_v1_image_generations.handle, payload)
+            result = await call.run(
+                openai_v1_image_generations.handle,
+                payload,
+                on_stream_item=stream_image_result_recorder(
+                    identity,
+                    prompt=body.prompt,
+                    mode="generate",
+                    model=body.model,
+                    size=body.size,
+                    channel="internal_pool",
+                    request_id=request_id,
+                ) if body.stream else None,
+            )
             count = 0
             if isinstance(result, dict):
                 count = finalize_image_result(
@@ -228,7 +289,7 @@ def create_router() -> APIRouter:
             model: str = Form(default="gpt-image-2"),
             n: int = Form(default=1),
             size: str | None = Form(default=None),
-            response_format: str = Form(default="b64_json"),
+            response_format: str = Form(default="url"),
             stream: bool | None = Form(default=None),
     ):
         identity = require_identity(authorization)
@@ -256,31 +317,45 @@ def create_router() -> APIRouter:
             "stream": stream,
             "base_url": resolve_image_base_url(request),
             "request_id": request_id,
+            "_image_storage_identity": identity,
         }
         use_personal_quota_free = attach_personal_image_channel(identity, payload, model)
         quota_request_id = None if use_personal_quota_free else reserve_image_quota(identity, int(n or 1), request_id)
         call = LoggedCall(identity, "/v1/images/edits", model, "图生图", request_id=request_id)
         try:
-            if not stream:
-                routed = await run_in_threadpool(channel_service.call_edit, payload)
-                if routed is not None:
-                    result, channel_name = routed
-                    call.log("渠道调用完成", result)
-                    count = finalize_image_result(
-                        identity,
-                        result,
-                        prompt=prompt,
-                        mode="edit",
-                        model=model,
-                        size=size,
-                        channel=channel_name,
-                        request_id=request_id,
-                    )
-                    finalize_quota(quota_request_id, count)
-                    return result
+            routed = await run_in_threadpool(channel_service.call_edit, payload)
+            if routed is not None:
+                result, channel_name = routed
+                call.log("渠道调用完成", result)
+                count = finalize_image_result(
+                    identity,
+                    result,
+                    prompt=prompt,
+                    mode="edit",
+                    model=model,
+                    size=size,
+                    channel=channel_name,
+                    request_id=request_id,
+                )
+                finalize_quota(quota_request_id, count)
+                if stream:
+                    return external_image_stream_response(result)
+                return result
             require_personal_channel_success(payload)
             require_internal_pool_enabled(payload.get("_channel_error"))
-            result = await call.run(openai_v1_image_edit.handle, payload)
+            result = await call.run(
+                openai_v1_image_edit.handle,
+                payload,
+                on_stream_item=stream_image_result_recorder(
+                    identity,
+                    prompt=prompt,
+                    mode="edit",
+                    model=model,
+                    size=size,
+                    channel="internal_pool",
+                    request_id=request_id,
+                ) if stream else None,
+            )
             count = 0
             if isinstance(result, dict):
                 count = finalize_image_result(
@@ -313,6 +388,7 @@ def create_router() -> APIRouter:
         model = str(payload.get("model") or "auto")
         request_id = request_id_from_request(request)
         payload["request_id"] = request_id
+        payload["_image_storage_identity"] = identity
         call = LoggedCall(identity, "/v1/chat/completions", model, "文本生成", request_id=request_id)
         return await call.run(openai_v1_chat_complete.handle, payload)
 
@@ -329,6 +405,7 @@ def create_router() -> APIRouter:
         model = str(payload.get("model") or "auto")
         request_id = request_id_from_request(request)
         payload["request_id"] = request_id
+        payload["_image_storage_identity"] = identity
         call = LoggedCall(identity, "/v1/responses", model, "Responses", request_id=request_id)
         return await call.run(openai_v1_response.handle, payload)
 

@@ -46,4 +46,4 @@ RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 EXPOSE 80
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80", "--access-log"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80", "--no-access-log"]

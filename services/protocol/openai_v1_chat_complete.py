@@ -109,27 +109,32 @@ def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     return model, messages
 
 
-def image_result_content(result: dict[str, Any]) -> str:
+def image_result_content(result: dict[str, Any], response_format: str = "url") -> str:
     data = result.get("data")
     if isinstance(data, list) and data:
-        return build_chat_image_markdown_content(result)
+        return build_chat_image_markdown_content(result, prefer_b64=response_format == "b64_json")
     return str(result.get("message") or "Image generation completed.")
 
 
 def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
     model, prompt, n, images = chat_image_args(body)
     request_id = str(body.get("request_id") or "")
+    response_format = str(body.get("response_format") or "url")
+    storage_identity = body.get("_image_storage_identity")
+    if not isinstance(storage_identity, dict):
+        storage_identity = None
     result = collect_image_outputs(stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
         model=model,
         n=n,
-        response_format="b64_json",
+        response_format=response_format,
         images=encode_images(images) or None,
         request_id=request_id,
+        image_storage_identity=storage_identity,
     )))
     return completion_response(
         model,
-        image_result_content(result),
+        image_result_content(result, response_format),
         int(result.get("created") or 0) or None,
         usage=estimate_text_usage(prompt, "", model),
     )
@@ -138,18 +143,23 @@ def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
 def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
     model, prompt, n, images = chat_image_args(body)
     request_id = str(body.get("request_id") or "")
+    response_format = str(body.get("response_format") or "url")
+    storage_identity = body.get("_image_storage_identity")
+    if not isinstance(storage_identity, dict):
+        storage_identity = None
     image_outputs = stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
         model=model,
         n=n,
-        response_format="b64_json",
+        response_format=response_format,
         images=encode_images(images) or None,
         request_id=request_id,
+        image_storage_identity=storage_identity,
     ))
-    yield from stream_image_chat_completion(image_outputs, model)
+    yield from stream_image_chat_completion(image_outputs, model, response_format)
 
 
-def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: str) -> Iterator[dict[str, Any]]:
+def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: str, response_format: str = "url") -> Iterator[dict[str, Any]]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     sent_role = False
@@ -160,7 +170,10 @@ def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: st
             content = output.text
             sent_text += content
         elif output.kind == "result":
-            content = build_chat_image_markdown_content({"data": output.data})
+            content = build_chat_image_markdown_content(
+                {"data": output.data},
+                prefer_b64=response_format == "b64_json",
+            )
         elif output.kind == "message":
             content = output.text[len(sent_text):] if output.text.startswith(sent_text) else output.text
         if not content:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,6 +91,7 @@ class WebDAVServiceTests(unittest.TestCase):
                     webdav_service.ADMIN_CONFIG_KEY: {
                         "enabled": True,
                         "url": "https://dav.example/base",
+                        "public_url": "https://cdn.example/public",
                         "username": "dav-user",
                         "password": "dav-pass",
                         "root_path": "YanAI",
@@ -132,11 +134,68 @@ class WebDAVServiceTests(unittest.TestCase):
         self.assertNotIn("webdav_status", records[1])
         self.assertEqual(
             records[0]["webdav_url"],
-            "https://dav.example/base/YanAI/2026/06/05/sample.png",
+            "https://cdn.example/public/YanAI/2026/06/05/sample.png",
         )
+        self.assertEqual(result["items"][0]["url"], "https://cdn.example/public/YanAI/2026/06/05/sample.png")
+        self.assertEqual(result["items"][0]["upload_url"], "https://dav.example/base/YanAI/2026/06/05/sample.png")
         self.assertIn(("PUT", "https://dav.example/base/YanAI/2026/06/05/sample.png"), [(method, url) for method, url, _, _ in calls])
         self.assertTrue(any(method == "MKCOL" and url.endswith("/YanAI/2026/06/05") for method, url, _, _ in calls))
         self.assertEqual(fake_config.data[webdav_service.ADMIN_CONFIG_KEY]["last_sync_at"], "2026-06-05 20:00:00")
+
+    def test_upload_generated_image_bytes_puts_directly_to_webdav(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = Path(tmp_dir) / "images"
+            images_dir.mkdir()
+            fake_config = SimpleNamespace(
+                data={
+                    webdav_service.ADMIN_CONFIG_KEY: {
+                        "enabled": True,
+                        "url": "https://dav.example/base",
+                        "public_url": "https://cdn.example/public",
+                        "username": "dav-user",
+                        "password": "dav-pass",
+                        "root_path": "YanAI",
+                    }
+                },
+                images_dir=images_dir,
+                _save=lambda: None,
+                get_repository_provider=lambda: None,
+            )
+            calls: list[tuple[str, str, bytes | None, dict[str, str] | None]] = []
+
+            def fake_request(
+                method: str,
+                url: str,
+                *,
+                data: bytes | None = None,
+                headers: dict[str, str] | None = None,
+                timeout: int = 30,
+            ) -> int:
+                calls.append((method, url, data, headers))
+                return 201 if method in {"MKCOL", "PUT"} else 200
+
+            with (
+                mock.patch.object(webdav_service, "config", fake_config),
+                mock.patch.object(webdav_service, "_request", side_effect=fake_request),
+                mock.patch.object(webdav_service, "china_now_text", return_value="2026-06-05 20:00:00"),
+                mock.patch.object(webdav_service.uuid, "uuid4", return_value=SimpleNamespace(hex="unique")),
+            ):
+                result = webdav_service.upload_generated_image_bytes(
+                    {"id": "admin", "role": "admin"},
+                    b"image-bytes",
+                )
+            local_files = list(images_dir.rglob("*"))
+
+        filename = f"{hashlib.md5(b'image-bytes').hexdigest()}_unique.png"
+        self.assertIsNotNone(result)
+        self.assertEqual(result["url"], f"https://cdn.example/public/YanAI/2026/06/05/{filename}")
+        self.assertEqual(result["upload_url"], f"https://dav.example/base/YanAI/2026/06/05/{filename}")
+        put_calls = [call for call in calls if call[0] == "PUT"]
+        self.assertEqual(len(put_calls), 1)
+        self.assertEqual(put_calls[0][2], b"image-bytes")
+        self.assertEqual((put_calls[0][3] or {}).get("Content-Type"), "image/png")
+        self.assertEqual(local_files, [])
+        self.assertEqual(fake_config.data[webdav_service.ADMIN_CONFIG_KEY]["last_sync_result"]["uploaded"], 1)
 
 
 if __name__ == "__main__":

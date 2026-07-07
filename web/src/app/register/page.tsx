@@ -11,6 +11,15 @@ import { getStoredAuthKey } from "@/store/auth";
 import { useSettingsStore } from "../settings/store";
 import { RegisterCard } from "./components/register-card";
 
+function readSseData(block: string) {
+  return block
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("\n")
+    .trim();
+}
+
 function RegisterDataController() {
   const didLoadRef = useRef(false);
   const loadRegister = useSettingsStore((state) => state.loadRegister);
@@ -23,19 +32,54 @@ function RegisterDataController() {
   }, [loadRegister]);
 
   useEffect(() => {
-    let source: EventSource | null = null;
+    const controller = new AbortController();
     let closed = false;
-    void getStoredAuthKey().then((token) => {
-      if (closed || !token) return;
+
+    const connect = async () => {
+      const token = await getStoredAuthKey();
+      if (closed || !token) {
+        return;
+      }
       const baseUrl = webConfig.apiUrl.replace(/\/$/, "");
-      source = new EventSource(`${baseUrl}/api/register/events?token=${encodeURIComponent(token)}`);
-      source.onmessage = (event) => {
-        setRegisterConfig(JSON.parse(event.data) as RegisterConfig);
-      };
+      const response = await fetch(`${baseUrl}/api/register/events`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (!closed) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          const payload = readSseData(block);
+          if (!payload || payload === "[DONE]") {
+            continue;
+          }
+          setRegisterConfig(JSON.parse(payload) as RegisterConfig);
+        }
+        if (done) {
+          break;
+        }
+      }
+    };
+
+    void connect().catch((error: unknown) => {
+      if (!closed && !(error instanceof DOMException && error.name === "AbortError")) {
+        console.error("register events stream failed", error);
+      }
     });
+
     return () => {
       closed = true;
-      source?.close();
+      controller.abort();
     };
   }, [setRegisterConfig]);
 

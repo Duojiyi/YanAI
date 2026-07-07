@@ -37,6 +37,7 @@ export function WebDAVSettingsDialog({
 }: WebDAVSettingsDialogProps) {
   const [enabled, setEnabled] = useState(false);
   const [url, setUrl] = useState("");
+  const [publicUrl, setPublicUrl] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [rootPath, setRootPath] = useState("");
@@ -45,6 +46,7 @@ export function WebDAVSettingsDialog({
     if (!open) return;
     setEnabled(Boolean(config?.enabled));
     setUrl(config?.url || "");
+    setPublicUrl(config?.public_url || "");
     setUsername(config?.username || "");
     setPassword("");
     setRootPath(config?.root_path || "");
@@ -54,6 +56,7 @@ export function WebDAVSettingsDialog({
     await onSave({
       enabled,
       url: url.trim(),
+      public_url: publicUrl.trim(),
       username: username.trim(),
       password,
       root_path: rootPath.trim(),
@@ -81,6 +84,16 @@ export function WebDAVSettingsDialog({
               placeholder="https://example.com/remote.php/dav/files/name"
               className="h-10 rounded-lg border-stone-200 bg-white"
             />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-stone-700">公开访问前缀</label>
+            <Input
+              value={publicUrl}
+              onChange={(event) => setPublicUrl(event.target.value)}
+              placeholder="https://cdn.example.com/yanai"
+              className="h-10 rounded-lg border-stone-200 bg-white"
+            />
+            <p className="text-xs leading-5 text-stone-500">留空时返回 WebDAV 地址；如 WebDAV 需要鉴权，建议填写可公开访问的 CDN 或分享前缀。</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">

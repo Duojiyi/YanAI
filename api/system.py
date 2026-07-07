@@ -42,6 +42,7 @@ class ImageDeleteRequest(BaseModel):
 class WebDAVConfigRequest(BaseModel):
     enabled: bool = False
     url: str = ""
+    public_url: str = ""
     username: str = ""
     password: str = ""
     root_path: str = ""
@@ -216,6 +217,7 @@ def create_router(app_version: str) -> APIRouter:
             detail={
                 "enabled": webdav.get("enabled"),
                 "url": webdav.get("url"),
+                "public_url": webdav.get("public_url"),
                 "root_path": webdav.get("root_path"),
                 "password_set": webdav.get("password_set"),
             },

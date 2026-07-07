@@ -10,6 +10,12 @@ from pydantic import BaseModel
 from api.support import require_admin
 from services.register_service import register_service
 
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
 
 class RegisterConfigRequest(BaseModel):
     mail: dict | None = None
@@ -51,8 +57,8 @@ def create_router() -> APIRouter:
         return {"register": register_service.reset()}
 
     @router.get("/api/register/events")
-    async def register_events(token: str = ""):
-        require_admin(f"Bearer {token}")
+    async def register_events(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
 
         async def stream():
             last = ""
@@ -63,6 +69,6 @@ def create_router() -> APIRouter:
                     yield f"data: {payload}\n\n"
                 await asyncio.sleep(0.5)
 
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        return StreamingResponse(stream(), media_type="text/event-stream", headers=SSE_RESPONSE_HEADERS)
 
     return router

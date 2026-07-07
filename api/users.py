@@ -45,7 +45,7 @@ class UserImageChannelRequest(BaseModel):
     base_url: str = ""
     api_key: str = ""
     models: list[str] | str = Field(default_factory=lambda: list(DEFAULT_USER_IMAGE_CHANNEL_MODELS))
-    timeout: int = 60
+    timeout: int = 300
 
 
 class UserImageChannelTestRequest(UserImageChannelRequest):
@@ -55,6 +55,7 @@ class UserImageChannelTestRequest(UserImageChannelRequest):
 class WebDAVConfigRequest(BaseModel):
     enabled: bool = False
     url: str = ""
+    public_url: str = ""
     username: str = ""
     password: str = ""
     root_path: str = ""
@@ -133,7 +134,7 @@ class ChannelRequest(BaseModel):
     models: list[str] | str = Field(default_factory=lambda: list(DEFAULT_INTERNAL_MODELS))
     weight: int = 1
     priority: int = 0
-    timeout: int = 60
+    timeout: int = 300
     enabled: bool = True
 
 
@@ -724,7 +725,9 @@ def create_router() -> APIRouter:
                 "ok": result.get("ok"),
                 "model_count": result.get("model_count"),
                 "tested_models": result.get("tested_models"),
+                "passed_models": result.get("passed_models"),
                 "missing_models": result.get("missing_models"),
+                "failed_models": result.get("failed_models"),
                 "latency_ms": result.get("latency_ms"),
                 "error": result.get("error"),
             },

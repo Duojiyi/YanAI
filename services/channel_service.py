@@ -16,10 +16,14 @@ from services.proxy_service import proxy_settings
 from services.repositories.base import RepositoryProvider
 from services.repositories.storage_adapter import RepositoryStorageAdapter
 from services.storage.base import StorageBackend
+from utils.helper import IMAGE_MODELS
 from utils.model_catalog import DEFAULT_INTERNAL_MODELS
 
 INTERNAL_POOL_ENABLED_KEY = "internal_pool_enabled"
 PERSONAL_CHANNEL_ID_PREFIX = "personal_image_channel"
+DEFAULT_EXTERNAL_CHANNEL_TIMEOUT = 300
+MODEL_TEST_PROMPT = "Generate a simple 1:1 test image with a small green check mark centered on a white background."
+MODEL_TEST_SIZE = "1:1"
 
 
 def _now_iso() -> str:
@@ -129,14 +133,21 @@ def _friendly_channel_error(error: object) -> str:
     normalized = message.lower()
     if "curl: (35)" in normalized or "connection was reset" in normalized or "recv failure" in normalized:
         return (
-            "连接被上游重置（curl 35）。请检查个人渠道 Base URL 是否正确、API Key 是否有效、"
+            "连接被上游重置（curl 35）。请检查外部渠道 Base URL 是否正确、API Key 是否有效、"
             "该渠道是否允许当前网络访问；如果系统设置里配置了代理，也请确认代理可用。"
         )
     if "curl: (28)" in normalized or "timed out" in normalized or "timeout" in normalized:
-        return "连接个人渠道超时。请检查渠道地址、代理或把个人渠道超时秒数调大后重试。"
+        return "连接外部渠道超时。请检查渠道地址、代理，或把该渠道超时秒数调大后重试。"
     if "proxy" in normalized and ("connect" in normalized or "failed" in normalized or "refused" in normalized):
-        return "代理连接失败。请检查系统设置里的代理地址是否可用，或暂时清空代理后重试个人渠道。"
+        return "代理连接失败。请检查系统设置里的代理地址是否可用，或暂时清空代理后重试外部渠道。"
     return message
+
+
+def _channel_timeout(channel: dict[str, object]) -> int:
+    try:
+        return max(5, int(channel.get("timeout") or DEFAULT_EXTERNAL_CHANNEL_TIMEOUT))
+    except (TypeError, ValueError):
+        return DEFAULT_EXTERNAL_CHANNEL_TIMEOUT
 
 
 class ChannelService:
@@ -167,9 +178,9 @@ class ChannelService:
         except (TypeError, ValueError):
             priority = 0
         try:
-            timeout = max(5, int(raw.get("timeout") or 60))
+            timeout = max(5, int(raw.get("timeout") or DEFAULT_EXTERNAL_CHANNEL_TIMEOUT))
         except (TypeError, ValueError):
-            timeout = 60
+            timeout = DEFAULT_EXTERNAL_CHANNEL_TIMEOUT
         return {
             "id": channel_id,
             "name": name,
@@ -532,7 +543,7 @@ class ChannelService:
         url = self._openai_compatible_url(channel, "/v1/models")
         response = self._session(channel).get(
             url,
-            timeout=int(channel.get("timeout") or 60),
+            timeout=_channel_timeout(channel),
         )
         if not response.ok:
             detail = _response_preview(response)
@@ -555,7 +566,7 @@ class ChannelService:
     def fetch_channel_models(self, channel_id: str) -> list[str] | None:
         normalized_id = _clean(channel_id)
         if normalized_id == "internal_pool":
-            return self._fetch_internal_channel_models(allow_default_fallback=True)
+            return self._fetch_internal_channel_models(allow_default_fallback=False)
         channel = self._find_external_channel(normalized_id)
         if channel is None:
             return None
@@ -568,40 +579,121 @@ class ChannelService:
         channel = self._internal_channel() if normalized_id == "internal_pool" else self._find_external_channel(normalized_id)
         if channel is None:
             return None
-        try:
-            if normalized_id == "internal_pool":
-                models = self._fetch_internal_channel_models(allow_default_fallback=False)
-            else:
-                models = self._fetch_external_channel_models(channel)
-            model_set = set(models)
-            tested_models = requested_models or models
-            missing_models = [
-                model
-                for model in requested_models
-                if not any(candidate in model_set for candidate in self._external_model_candidates(model))
-            ]
-            ok = not missing_models
-            return {
-                "ok": ok,
-                "channel": self._internal_channel() if normalized_id == "internal_pool" else self._public(channel),
-                "models": models,
-                "model_count": len(models),
-                "tested_models": tested_models,
-                "missing_models": missing_models,
-                "latency_ms": int((time.monotonic() - started_at) * 1000),
-                "error": "" if ok else f"models unavailable: {', '.join(missing_models)}",
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "channel": self._internal_channel() if normalized_id == "internal_pool" else self._public(channel),
-                "models": [],
-                "model_count": 0,
-                "tested_models": requested_models,
-                "missing_models": requested_models,
-                "latency_ms": int((time.monotonic() - started_at) * 1000),
-                "error": str(exc),
-            }
+        configured_models = _normalize_models(channel.get("models"))
+        tested_models = requested_models or configured_models[:1]
+        results: list[dict[str, object]] = []
+        passed_models: list[str] = []
+        missing_models: list[str] = []
+        failed_models: list[str] = []
+
+        for model in tested_models:
+            model_started_at = time.monotonic()
+            try:
+                if normalized_id == "internal_pool":
+                    detail = self._test_internal_model(model)
+                else:
+                    detail = self._test_external_channel_model(channel, model)
+                passed_models.append(model)
+                results.append({
+                    "model": model,
+                    "resolved_model": detail.get("resolved_model"),
+                    "request_model": detail.get("request_model"),
+                    "ok": True,
+                    "image_count": detail.get("image_count", 0),
+                    "latency_ms": int((time.monotonic() - model_started_at) * 1000),
+                    "error": "",
+                })
+            except ValueError as exc:
+                missing_models.append(model)
+                failed_models.append(model)
+                results.append({
+                    "model": model,
+                    "resolved_model": "",
+                    "request_model": "",
+                    "ok": False,
+                    "image_count": 0,
+                    "latency_ms": int((time.monotonic() - model_started_at) * 1000),
+                    "error": str(exc),
+                })
+            except Exception as exc:
+                failed_models.append(model)
+                results.append({
+                    "model": model,
+                    "resolved_model": "",
+                    "request_model": "",
+                    "ok": False,
+                    "image_count": 0,
+                    "latency_ms": int((time.monotonic() - model_started_at) * 1000),
+                    "error": str(exc),
+                })
+
+        ok = bool(tested_models) and not failed_models
+        errors = [f"{item.get('model')}: {item.get('error')}" for item in results if not item.get("ok")]
+        return {
+            "ok": ok,
+            "channel": self._internal_channel() if normalized_id == "internal_pool" else self._public(channel),
+            "models": configured_models,
+            "model_count": len(configured_models),
+            "tested_models": tested_models,
+            "passed_models": passed_models,
+            "missing_models": missing_models,
+            "failed_models": failed_models,
+            "results": results,
+            "latency_ms": int((time.monotonic() - started_at) * 1000),
+            "error": "" if ok else "; ".join(errors) or "no models selected",
+        }
+
+    @staticmethod
+    def _image_result_count(result: object) -> int:
+        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+            return 0
+        return sum(
+            1
+            for item in result.get("data") or []
+            if isinstance(item, dict) and (item.get("url") or item.get("b64_json"))
+        )
+
+    def _test_external_channel_model(self, channel: dict[str, object], model: str) -> dict[str, object]:
+        resolved_model = self._resolve_external_model_for_channel(channel, model)
+        if not resolved_model:
+            raise ValueError(f"model unavailable in channel: {model}")
+        result = self._call_generation(channel, {
+            "prompt": MODEL_TEST_PROMPT,
+            "model": resolved_model,
+            "n": 1,
+            "size": MODEL_TEST_SIZE,
+            "response_format": "url",
+        })
+        image_count = self._image_result_count(result)
+        if image_count <= 0:
+            raise RuntimeError("generation response contains no image")
+        return {"request_model": resolved_model, "resolved_model": resolved_model, "image_count": image_count}
+
+    def _internal_image_test_model(self, model: str) -> tuple[str, str]:
+        requested = _clean(model)
+        mappings = self._image_model_mappings()
+        if requested in IMAGE_MODELS:
+            return requested, mappings.get(requested, "auto")
+        for source_model, target_model in mappings.items():
+            if source_model in IMAGE_MODELS and target_model == requested:
+                return source_model, target_model
+        raise ValueError(f"model is not configured for internal image generation: {requested}")
+
+    def _test_internal_model(self, model: str) -> dict[str, object]:
+        request_model, resolved_model = self._internal_image_test_model(model)
+        from services.protocol.openai_v1_image_generations import handle
+
+        result = handle({
+            "prompt": MODEL_TEST_PROMPT,
+            "model": request_model,
+            "n": 1,
+            "size": MODEL_TEST_SIZE,
+            "response_format": "url",
+        })
+        image_count = self._image_result_count(result)
+        if image_count <= 0:
+            raise RuntimeError("generation response contains no image")
+        return {"request_model": request_model, "resolved_model": resolved_model, "image_count": image_count}
 
     def test_personal_channel_models(
             self,
@@ -628,7 +720,7 @@ class ChannelService:
                     "models": [],
                     "weight": 1,
                     "priority": 0,
-                    "timeout": 60,
+                    "timeout": DEFAULT_EXTERNAL_CHANNEL_TIMEOUT,
                     "enabled": False,
                     "has_api_key": False,
                     "created_at": None,
@@ -795,7 +887,7 @@ class ChannelService:
         response = self._session(channel).post(
             self._openai_compatible_url(channel, "/v1/images/generations"),
             json=body,
-            timeout=int(channel.get("timeout") or 60),
+            timeout=_channel_timeout(channel),
         )
         return self._normalize_response(response, payload)
 
@@ -805,7 +897,7 @@ class ChannelService:
             "prompt": prompt or "",
             "model": _clean(payload.get("model")) or (channel.get("models") or ["gpt-image-1"])[0],
             "n": str(int(payload.get("n") or 1)),
-            "response_format": _clean(payload.get("response_format")) or "b64_json",
+            "response_format": _clean(payload.get("response_format")) or "url",
         }
         if size is not None:
             form_data["size"] = size
@@ -828,7 +920,7 @@ class ChannelService:
             response = self._session(channel).post(
                 self._openai_compatible_url(channel, "/v1/images/edits"),
                 multipart=multipart,
-                timeout=int(channel.get("timeout") or 60),
+                timeout=_channel_timeout(channel),
             )
         finally:
             multipart.close()
@@ -864,14 +956,18 @@ class ChannelService:
             raise RuntimeError("channel response missing data")
         b64_items = [item for item in data if isinstance(item, dict) and item.get("b64_json")]
         url_items = [item for item in data if isinstance(item, dict) and item.get("url") and not item.get("b64_json")]
+        storage_identity = original_payload.get("_image_storage_identity")
+        if not isinstance(storage_identity, dict):
+            storage_identity = None
         if b64_items:
             from services.protocol.conversation import format_image_result
 
             result = format_image_result(
                 b64_items,
                 _clean(original_payload.get("prompt")),
-                _clean(original_payload.get("response_format")) or "b64_json",
+                _clean(original_payload.get("response_format")) or "url",
                 _clean(original_payload.get("base_url")) or None,
+                storage_identity=storage_identity,
             )
             if url_items:
                 result["data"].extend(url_items)
@@ -883,15 +979,14 @@ class ChannelService:
 
             for item in data:
                 if isinstance(item, str):
-                    normalized["data"].append({
-                        "b64_json": item,
-                        "url": format_image_result(
-                            [{"b64_json": item}],
-                            _clean(original_payload.get("prompt")),
-                            "b64_json",
-                            _clean(original_payload.get("base_url")) or None,
-                        )["data"][0]["url"],
-                    })
+                    converted = format_image_result(
+                        [{"b64_json": item}],
+                        _clean(original_payload.get("prompt")),
+                        _clean(original_payload.get("response_format")) or "url",
+                        _clean(original_payload.get("base_url")) or None,
+                        storage_identity=storage_identity,
+                    )["data"]
+                    normalized["data"].extend(converted)
         return normalized
 
 

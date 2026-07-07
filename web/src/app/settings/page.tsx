@@ -8,6 +8,7 @@ import { useAuthGuard } from "@/lib/use-auth-guard";
 import { ConfigCard } from "./components/config-card";
 import { CPAPoolDialog } from "./components/cpa-pool-dialog";
 import { CPAPoolsCard } from "./components/cpa-pools-card";
+import { ImageWebDAVCard } from "./components/image-webdav-card";
 import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { SettingsHeader } from "./components/settings-header";
 import { Sub2APIConnections } from "./components/sub2api-connections";
@@ -53,6 +54,7 @@ function SettingsPageContent() {
       <SettingsHeader />
       <section className="space-y-6">
         <ConfigCard />
+        <ImageWebDAVCard />
         <UserKeysCard />
         <CPAPoolsCard />
         <Sub2APIConnections />

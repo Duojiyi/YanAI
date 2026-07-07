@@ -95,6 +95,99 @@ class FakeChannelService:
 
 
 class PersonalImageChannelApiTests(unittest.TestCase):
+    def test_admin_stream_generation_uses_external_channel(self) -> None:
+        app = FastAPI()
+        app.include_router(api_ai.create_router())
+        auth = FakeAuthService()
+        auth.identity = {
+            "id": "admin",
+            "name": "Admin",
+            "role": "admin",
+        }
+        channels = FakeChannelService()
+        channels.generation_result = (
+            {"created": 1, "data": [{"url": "https://external.example/image.png"}]},
+            "External",
+        )
+        record_calls: list[dict[str, object]] = []
+
+        def fake_record_image_result(identity: dict[str, object], result: dict[str, object], **kwargs: object):
+            record_calls.append(dict(kwargs))
+            return []
+
+        with (
+            mock.patch.object(api_support, "auth_service", auth),
+            mock.patch.object(api_ai, "auth_service", auth),
+            mock.patch.object(api_ai, "channel_service", channels),
+            mock.patch.object(api_ai, "record_image_result", fake_record_image_result),
+        ):
+            response = TestClient(app).post(
+                "/v1/images/generations",
+                headers={"Authorization": "Bearer user-token"},
+                json={
+                    "model": "gpt-image-2",
+                    "prompt": "draw",
+                    "n": 1,
+                    "response_format": "url",
+                    "stream": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.headers.get("content-type", "").startswith("text/event-stream"))
+        self.assertIn('"object": "image.generation.result"', response.text)
+        self.assertIn("https://external.example/image.png", response.text)
+        self.assertEqual(len(channels.calls), 1)
+        self.assertFalse(channels.internal_pool_checked)
+        self.assertEqual(record_calls[0]["channel"], "External")
+
+    def test_admin_stream_edit_uses_external_channel(self) -> None:
+        app = FastAPI()
+        app.include_router(api_ai.create_router())
+        auth = FakeAuthService()
+        auth.identity = {
+            "id": "admin",
+            "name": "Admin",
+            "role": "admin",
+        }
+        channels = FakeChannelService()
+        channels.edit_result = (
+            {"created": 1, "data": [{"url": "https://external.example/edit.png"}]},
+            "External",
+        )
+        record_calls: list[dict[str, object]] = []
+
+        def fake_record_image_result(identity: dict[str, object], result: dict[str, object], **kwargs: object):
+            record_calls.append(dict(kwargs))
+            return []
+
+        with (
+            mock.patch.object(api_support, "auth_service", auth),
+            mock.patch.object(api_ai, "auth_service", auth),
+            mock.patch.object(api_ai, "channel_service", channels),
+            mock.patch.object(api_ai, "record_image_result", fake_record_image_result),
+        ):
+            response = TestClient(app).post(
+                "/v1/images/edits",
+                headers={"Authorization": "Bearer user-token"},
+                data={
+                    "model": "gpt-image-2",
+                    "prompt": "edit",
+                    "n": "1",
+                    "response_format": "url",
+                    "stream": "true",
+                },
+                files={"image": ("input.png", b"image-bytes", "image/png")},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.headers.get("content-type", "").startswith("text/event-stream"))
+        self.assertIn('"object": "image.generation.result"', response.text)
+        self.assertIn("https://external.example/edit.png", response.text)
+        self.assertEqual(len(channels.edit_calls), 1)
+        self.assertFalse(channels.internal_pool_checked)
+        self.assertEqual(record_calls[0]["channel"], "External")
+
     def test_enabled_personal_channel_failure_does_not_fall_back_to_internal_pool(self) -> None:
         app = FastAPI()
         app.include_router(api_ai.create_router())

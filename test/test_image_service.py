@@ -409,6 +409,75 @@ class ImageServiceTests(unittest.TestCase):
         self.assertEqual(repository.inserted[0]["owner_user_id"], "user-a")
         self.assertEqual(repository.inserted[0]["created_at"], "2026-05-29 20:15:30")
 
+    def test_record_image_result_rewrites_response_url_after_webdav_sync(self) -> None:
+        repository = InsertOnlyImageRecordRepository()
+        fake_config = SimpleNamespace(
+            get_repository_provider=lambda: SimpleNamespace(image_records=repository),
+        )
+        local_url = "http://127.0.0.1:8000/images/2026/05/29/a.png"
+        remote_url = "https://cdn.example/YanAI/2026/05/29/a.png"
+        result = {"data": [{"url": local_url, "revised_prompt": "prompt"}]}
+
+        with (
+            mock.patch.object(image_service, "config", fake_config),
+            mock.patch.object(image_service, "china_now_text", return_value="2026-05-29 20:15:30"),
+            mock.patch.object(
+                image_service,
+                "sync_created_records_to_webdav",
+                return_value={"items": [{"source_url": local_url, "url": remote_url}]},
+            ),
+        ):
+            image_service.record_image_result(
+                {"id": "admin", "role": "admin"},
+                result,
+                prompt="prompt",
+                mode="generate",
+                model="gpt-image-2",
+            )
+
+        self.assertEqual(result["data"][0]["url"], remote_url)
+        self.assertEqual(result["data"][0]["local_url"], local_url)
+        self.assertEqual(result["data"][0]["webdav_url"], remote_url)
+        self.assertEqual(result["data"][0]["webdav_status"], "synced")
+
+    def test_record_image_result_skips_sync_for_direct_webdav_result(self) -> None:
+        repository = InsertOnlyImageRecordRepository()
+        fake_config = SimpleNamespace(
+            get_repository_provider=lambda: SimpleNamespace(image_records=repository),
+        )
+        remote_url = "https://cdn.example/YanAI/2026/05/29/a.png"
+        result = {
+            "data": [
+                {
+                    "url": remote_url,
+                    "webdav_url": remote_url,
+                    "webdav_status": "synced",
+                    "webdav_synced_at": "2026-05-29 20:15:00",
+                    "revised_prompt": "prompt",
+                }
+            ]
+        }
+
+        with (
+            mock.patch.object(image_service, "config", fake_config),
+            mock.patch.object(image_service, "china_now_text", return_value="2026-05-29 20:15:30"),
+            mock.patch.object(image_service, "sync_created_records_to_webdav") as sync,
+        ):
+            image_service.record_image_result(
+                {"id": "admin", "role": "admin"},
+                result,
+                prompt="prompt",
+                mode="generate",
+                model="gpt-image-2",
+            )
+
+        sync.assert_not_called()
+        self.assertEqual(repository.inserted[0]["url"], remote_url)
+        self.assertEqual(repository.inserted[0]["webdav_url"], remote_url)
+        self.assertEqual(repository.inserted[0]["webdav_status"], "synced")
+        self.assertEqual(repository.inserted[0]["webdav_synced_at"], "2026-05-29 20:15:00")
+        self.assertNotIn("local_url", result["data"][0])
+
     def test_save_image_bytes_uses_unique_file_names_for_same_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             images_dir = Path(tmp_dir) / "images"

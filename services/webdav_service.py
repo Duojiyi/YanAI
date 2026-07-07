@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import mimetypes
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -47,6 +49,7 @@ def _normalize_config(raw: object, *, include_password: bool = False) -> dict[st
     result: dict[str, object] = {
         "enabled": _bool(data.get("enabled"), False),
         "url": _clean(data.get("url")).rstrip("/"),
+        "public_url": _clean(data.get("public_url")).rstrip("/"),
         "username": _clean(data.get("username")),
         "root_path": _normalize_path(data.get("root_path")),
         "password_set": bool(password),
@@ -61,7 +64,7 @@ def _normalize_config(raw: object, *, include_password: bool = False) -> dict[st
 def _merge_config(current: object, updates: dict[str, object]) -> dict[str, object]:
     existing = _normalize_config(current, include_password=True)
     next_config = dict(existing)
-    for key in ("enabled", "url", "username", "root_path", "last_sync_at", "last_sync_result"):
+    for key in ("enabled", "url", "public_url", "username", "root_path", "last_sync_at", "last_sync_result"):
         if key in updates:
             next_config[key] = updates.get(key)
     if "password" in updates and _clean(updates.get("password")):
@@ -176,6 +179,18 @@ def _join_remote_url(base_url: str, parts: list[str]) -> str:
 
 def _remote_parts(remote_root: str, relative_path: Path) -> list[str]:
     return [*_split_remote_parts(remote_root), *[part for part in relative_path.as_posix().split("/") if part]]
+
+
+def _validate_base_url(base_url: str) -> None:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("webdav url is invalid")
+
+
+def _generated_image_relative_path(image_data: bytes) -> Path:
+    file_hash = hashlib.md5(image_data).hexdigest()
+    filename = f"{file_hash}_{uuid.uuid4().hex}.png"
+    return Path(*_now_text()[:10].split("-")) / filename
 
 
 def _ensure_remote_dirs(
@@ -303,11 +318,23 @@ def _upload_file(webdav_config: dict[str, object], local_path: Path) -> str:
     base_url = _clean(webdav_config.get("url")).rstrip("/")
     if not base_url:
         raise ValueError("webdav url is required")
-    parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("webdav url is invalid")
+    _validate_base_url(base_url)
 
     relative_path = _relative_image_path(local_path)
+    return _upload_bytes(webdav_config, relative_path, local_path.read_bytes(), mimetypes.guess_type(local_path.name)[0])
+
+
+def _upload_bytes(
+    webdav_config: dict[str, object],
+    relative_path: Path,
+    image_data: bytes,
+    content_type: str | None = None,
+) -> str:
+    base_url = _clean(webdav_config.get("url")).rstrip("/")
+    if not base_url:
+        raise ValueError("webdav url is required")
+    _validate_base_url(base_url)
+
     parts = _remote_parts(_clean(webdav_config.get("root_path")), relative_path)
     remote_url = _join_remote_url(base_url, parts)
     auth = _authorization_header(_clean(webdav_config.get("username")), _clean(webdav_config.get("password")))
@@ -320,12 +347,27 @@ def _upload_file(webdav_config: dict[str, object], local_path: Path) -> str:
         headers=headers,
         timeout=30,
     )
-    content_type = mimetypes.guess_type(local_path.name)[0] or "application/octet-stream"
-    put_headers = {**headers, "Content-Type": content_type}
-    status = _request("PUT", remote_url, data=local_path.read_bytes(), headers=put_headers, timeout=60)
+    put_headers = {**headers, "Content-Type": content_type or "application/octet-stream"}
+    status = _request("PUT", remote_url, data=image_data, headers=put_headers, timeout=60)
     if status not in {200, 201, 204}:
         raise RuntimeError(f"webdav put returned status {status}")
     return remote_url
+
+
+def _public_relative_url(webdav_config: dict[str, object], relative_path: Path) -> str:
+    public_url = _clean(webdav_config.get("public_url")).rstrip("/")
+    if not public_url:
+        return ""
+    parts = _remote_parts(_clean(webdav_config.get("root_path")), relative_path)
+    return _join_remote_url(public_url, parts)
+
+
+def _public_file_url(webdav_config: dict[str, object], local_path: Path) -> str:
+    public_url = _clean(webdav_config.get("public_url")).rstrip("/")
+    if not public_url:
+        return ""
+    relative_path = _relative_image_path(local_path)
+    return _public_relative_url(webdav_config, relative_path)
 
 
 def _sync_config_status(scope: str, user_id: str, result: dict[str, object]) -> None:
@@ -376,6 +418,7 @@ def sync_images_to_webdav(
         "failed": 0,
         "bytes": 0,
         "errors": [],
+        "items": [],
     }
     for index, record in enumerate(records):
         if not isinstance(record, dict) or not _record_matches_filters(record, normalized_filters):
@@ -389,13 +432,23 @@ def sync_images_to_webdav(
             result["skipped"] = int(result["skipped"]) + 1
             continue
         try:
-            remote_url = _upload_file(webdav_config, local_path)
+            upload_url = _upload_file(webdav_config, local_path)
+            remote_url = _public_file_url(webdav_config, local_path) or upload_url
             next_record = dict(record)
             _mark_record_sync(next_record, scope=scope, user_id=user_id, status="synced", remote_url=remote_url)
             records[index] = next_record
             changed.append(next_record)
             result["uploaded"] = int(result["uploaded"]) + 1
             result["bytes"] = int(result["bytes"]) + local_path.stat().st_size
+            items = result["items"]
+            if isinstance(items, list):
+                items.append({
+                    "id": _record_id(record),
+                    "source_url": _clean(record.get("url")),
+                    "url": remote_url,
+                    "upload_url": upload_url,
+                    "bytes": local_path.stat().st_size,
+                })
         except (HTTPError, URLError, OSError, RuntimeError, ValueError) as exc:
             next_record = dict(record)
             error = str(exc)
@@ -413,6 +466,42 @@ def sync_images_to_webdav(
 
     if changed:
         _save_records(source, records, changed)
+    _sync_config_status(scope, user_id, result)
+    return result
+
+
+def upload_generated_image_bytes(
+    identity: dict[str, object],
+    image_data: bytes,
+    *,
+    content_type: str = "image/png",
+) -> dict[str, object] | None:
+    if not image_data:
+        return None
+    scope = "user" if _clean(identity.get("role")) == "user" else "admin"
+    user_id = _clean(identity.get("id")) if scope == "user" else ""
+    webdav_config = get_webdav_config(scope, user_id=user_id, include_password=True)
+    if not _bool(webdav_config.get("enabled")):
+        return None
+    if not _clean(webdav_config.get("url")):
+        raise ValueError("webdav url is required")
+
+    relative_path = _generated_image_relative_path(image_data)
+    upload_url = _upload_bytes(webdav_config, relative_path, image_data, content_type)
+    remote_url = _public_relative_url(webdav_config, relative_path) or upload_url
+    synced_at = _now_text()
+    result: dict[str, object] = {
+        "scope": scope,
+        "total": 1,
+        "uploaded": 1,
+        "skipped": 0,
+        "failed": 0,
+        "bytes": len(image_data),
+        "url": remote_url,
+        "upload_url": upload_url,
+        "relative_path": relative_path.as_posix(),
+        "synced_at": synced_at,
+    }
     _sync_config_status(scope, user_id, result)
     return result
 

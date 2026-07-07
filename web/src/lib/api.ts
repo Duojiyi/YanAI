@@ -1,4 +1,6 @@
 import { httpRequest } from "@/lib/request";
+import webConfig from "@/constants/common-env";
+import { clearStoredAuthSession, getStoredAuthKey } from "@/store/auth";
 
 export type AccountType = "Free" | "Plus" | "ProLite" | "Pro" | "Team";
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
@@ -150,6 +152,7 @@ export type ImageListResponse = {
 export type ImageWebDAVConfig = {
   enabled: boolean;
   url: string;
+  public_url?: string;
   username: string;
   root_path: string;
   password_set: boolean;
@@ -165,6 +168,7 @@ export type ImageWebDAVConfig = {
 export type ImageWebDAVConfigPayload = {
   enabled: boolean;
   url: string;
+  public_url?: string;
   username: string;
   password?: string;
   root_path: string;
@@ -178,6 +182,7 @@ export type ImageWebDAVSyncResult = {
   failed: number;
   bytes: number;
   errors: Array<{ id?: string; name?: string; error: string }>;
+  items?: Array<{ id?: string; source_url?: string; url?: string; upload_url?: string; bytes?: number }>;
 };
 
 export type PromptLibraryItem = {
@@ -261,6 +266,141 @@ export type ImageResponse = {
   created: number;
   data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
 };
+
+type ImageStreamChunk = {
+  object?: string;
+  created?: number;
+  data?: ImageResponse["data"];
+  message?: string;
+  error?: string | { message?: string };
+};
+
+class StreamUnsupportedError extends Error {}
+
+function streamErrorMessage(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const item = value as { detail?: unknown; error?: unknown; message?: unknown };
+  if (typeof item.message === "string") {
+    return item.message;
+  }
+  return streamErrorMessage(item.detail) || streamErrorMessage(item.error);
+}
+
+function apiUrl(path: string) {
+  return `${webConfig.apiUrl.replace(/\/$/, "")}${path}`;
+}
+
+async function parseImageStream(response: Response): Promise<ImageResponse> {
+  if (!response.body) {
+    throw new Error("当前浏览器不支持流式图片响应");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let created = Math.floor(Date.now() / 1000);
+  const data: ImageResponse["data"] = [];
+
+  const consumeBlock = (block: string) => {
+    const payload = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .join("\n")
+      .trim();
+    if (!payload || payload === "[DONE]") {
+      return;
+    }
+
+    let chunk: ImageStreamChunk;
+    try {
+      chunk = JSON.parse(payload) as ImageStreamChunk;
+    } catch {
+      return;
+    }
+    if (chunk.error) {
+      throw new Error(streamErrorMessage(chunk.error) || "生成图片失败");
+    }
+    if (chunk.created) {
+      created = chunk.created;
+    }
+    if (chunk.object === "image.generation.message" && chunk.message) {
+      throw new Error(chunk.message);
+    }
+    if (chunk.object === "image.generation.result" && Array.isArray(chunk.data)) {
+      data.push(...chunk.data);
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() || "";
+    for (const block of blocks) {
+      consumeBlock(block);
+    }
+    if (done) {
+      break;
+    }
+  }
+  if (buffer.trim()) {
+    consumeBlock(buffer);
+  }
+
+  if (!data.length) {
+    throw new Error("未返回图片数据");
+  }
+  return { created, data };
+}
+
+async function streamImageRequest(path: string, body: Record<string, unknown> | FormData): Promise<ImageResponse> {
+  const authKey = await getStoredAuthKey();
+  const headers: Record<string, string> = {};
+  let requestBody: BodyInit;
+
+  if (authKey) {
+    headers.Authorization = `Bearer ${authKey}`;
+  }
+  if (body instanceof FormData) {
+    requestBody = body;
+  } else {
+    headers["Content-Type"] = "application/json";
+    requestBody = JSON.stringify({ ...body, stream: true });
+  }
+
+  const response = await fetch(apiUrl(path), {
+    method: "POST",
+    headers,
+    body: requestBody,
+  });
+
+  if (!response.ok) {
+    if (response.status === 401 && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      await clearStoredAuthSession();
+      window.location.replace("/login");
+      return new Promise(() => {});
+    }
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = await response.text().catch(() => "");
+    }
+    const message = streamErrorMessage(payload) || `请求失败 (${response.status})`;
+    if (response.status === 400 && message.includes("stream is not supported")) {
+      throw new StreamUnsupportedError(message);
+    }
+    throw new Error(message);
+  }
+
+  return parseImageStream(response);
+}
 
 export type LoginResponse = {
   ok: boolean;
@@ -506,19 +646,24 @@ export async function updateAccount(
 }
 
 export async function generateImage(prompt: string, model?: ImageModel, size?: string) {
-  return httpRequest<ImageResponse>(
-    "/v1/images/generations",
-    {
+  const body = {
+    prompt,
+    ...(model ? { model } : {}),
+    ...(size ? { size } : {}),
+    n: 1,
+    response_format: "url",
+  };
+  try {
+    return await streamImageRequest("/v1/images/generations", body);
+  } catch (error) {
+    if (!(error instanceof StreamUnsupportedError)) {
+      throw error;
+    }
+    return httpRequest<ImageResponse>("/v1/images/generations", {
       method: "POST",
-      body: {
-        prompt,
-        ...(model ? { model } : {}),
-        ...(size ? { size } : {}),
-        n: 1,
-        response_format: "url",
-      },
-    },
-  );
+      body,
+    });
+  }
 }
 
 export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string) {
@@ -537,14 +682,32 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   }
   formData.append("n", "1");
   formData.append("response_format", "url");
+  formData.append("stream", "true");
 
-  return httpRequest<ImageResponse>(
-    "/v1/images/edits",
-    {
+  try {
+    return await streamImageRequest("/v1/images/edits", formData);
+  } catch (error) {
+    if (!(error instanceof StreamUnsupportedError)) {
+      throw error;
+    }
+    const fallbackFormData = new FormData();
+    uploadFiles.forEach((file) => {
+      fallbackFormData.append("image", file);
+    });
+    fallbackFormData.append("prompt", prompt);
+    if (model) {
+      fallbackFormData.append("model", model);
+    }
+    if (size) {
+      fallbackFormData.append("size", size);
+    }
+    fallbackFormData.append("n", "1");
+    fallbackFormData.append("response_format", "url");
+    return httpRequest<ImageResponse>("/v1/images/edits", {
       method: "POST",
-      body: formData,
-    },
-  );
+      body: fallbackFormData,
+    });
+  }
 }
 
 export async function fetchSettingsConfig() {
@@ -961,7 +1124,18 @@ export type ChannelModelTestResult = {
   models: string[];
   model_count: number;
   tested_models: string[];
+  passed_models?: string[];
   missing_models: string[];
+  failed_models?: string[];
+  results?: Array<{
+    model: string;
+    resolved_model?: string;
+    request_model?: string;
+    ok: boolean;
+    image_count: number;
+    latency_ms: number;
+    error: string;
+  }>;
   latency_ms: number;
   error: string;
 };

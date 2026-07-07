@@ -13,6 +13,14 @@ from api.support import resolve_web_asset, start_account_refresh_watcher, start_
 from services.config import config
 from services.observability import normalize_request_id, request_id_context
 
+LONG_CACHE_PREFIXES = (
+    "/_next/static/",
+    "/banana-prompt-quicker/",
+    "/images/",
+    "/prompt-assets/",
+)
+LONG_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
 
 def create_app() -> FastAPI:
     app_version = config.app_version
@@ -45,6 +53,8 @@ def create_app() -> FastAPI:
             request.state.request_id = request_id
             response = await call_next(request)
             response.headers["x-request-id"] = request_id
+            if any(request.url.path.startswith(prefix) for prefix in LONG_CACHE_PREFIXES):
+                response.headers.setdefault("Cache-Control", LONG_CACHE_CONTROL)
             return response
 
     app.include_router(ai.create_router())

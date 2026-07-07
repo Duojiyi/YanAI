@@ -81,10 +81,10 @@ environment:
 
 ### 反向代理与流式输出
 
-如果通过 Nginx、宝塔、CDN 或平台网关暴露给第三方客户端，建议关闭 SSE 缓冲和压缩，否则客户端可能只看到空消息或等到请求结束才显示：
+如果通过 Nginx、宝塔、CDN 或平台网关暴露给第三方客户端，建议只对 `/v1/*` 与 SSE 关闭缓冲和缓存；`/_next/static/`、`/banana-prompt-quicker/`、`/prompt-assets/`、`/images/` 应使用长缓存，避免大静态资源和生成图片频繁回源。完整示例见 [`docs/nginx.example.conf`](docs/nginx.example.conf)：
 
 ```nginx
-location / {
+location ^~ /v1/ {
     proxy_pass http://127.0.0.1:3001;
     proxy_http_version 1.1;
     proxy_buffering off;
@@ -96,6 +96,12 @@ location / {
     proxy_send_timeout 3600s;
     add_header X-Accel-Buffering no always;
     add_header Cache-Control "no-cache, no-transform" always;
+}
+
+location ^~ /_next/static/ {
+    proxy_pass http://127.0.0.1:3001;
+    expires 1y;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
 }
 ```
 
@@ -208,9 +214,10 @@ python scripts/migrate_storage.py --from json --to postgres --verify-only
 
 ### 图片归档与 WebDAV
 
-- 管理员可在「图片管理」中配置全局 WebDAV 存储，普通用户可在「我的图片」中配置自己的 WebDAV 目录
-- WebDAV 支持启停、URL、用户名、密码和远程目录配置；密码会以已设置状态回显，编辑时留空可保持原密码
-- 新生成图片在 WebDAV 启用后会自动尝试同步；也可按日期、用户、渠道或请求 ID 手动同步历史图片
+- 管理员可在「设置」或「图片管理」中配置全局 WebDAV 存储，普通用户可在「我的图片」中配置自己的 WebDAV 目录
+- WebDAV 支持启停、URL、公开访问前缀、用户名、密码和远程目录配置；密码会以已设置状态回显，编辑时留空可保持原密码
+- 新生成图片在 WebDAV 启用后会直接上传到 WebDAV，并优先返回 WebDAV/CDN 远程 URL；未启用 WebDAV 时才写入本地 `/images/...`
+- 如果 WebDAV 地址本身需要鉴权，建议配置公开访问前缀为 CDN、对象存储网关或 WebDAV 分享地址，否则第三方客户端可能无法直接加载图片
 - 管理员和普通用户都可以先勾选图片，再只同步所选图片到 WebDAV；未选择图片时仍按当前筛选范围同步
 - 图片记录会保存 WebDAV 同步状态、同步时间和远程地址，图片管理与我的图片页面会显示已同步状态
 

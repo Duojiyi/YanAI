@@ -104,17 +104,23 @@ def text_output_item(text: str, item_id: str | None = None, status: str = "compl
 def image_output_items(prompt: str, data: list[dict[str, Any]], item_id: str | None = None) -> list[dict[str, Any]]:
     output = []
     for item in data:
+        url = str(item.get("url") or "").strip()
         b64_json = str(item.get("b64_json") or "").strip()
-        if b64_json:
-            output.append({
-                "id": item_id or f"ig_{len(output) + 1}",
-                "type": "image_generation_call",
-                "status": "completed",
-                "result": b64_json,
-                "revised_prompt": str(item.get("revised_prompt") or prompt).strip() or prompt,
-                "quality": "high",
-                "size": "1024x1024",
-            })
+        result = url or b64_json
+        if not result:
+            continue
+        output_item = {
+            "id": item_id or f"ig_{len(output) + 1}",
+            "type": "image_generation_call",
+            "status": "completed",
+            "result": result,
+            "revised_prompt": str(item.get("revised_prompt") or prompt).strip() or prompt,
+            "quality": "high",
+            "size": "1024x1024",
+        }
+        if url:
+            output_item["url"] = url
+        output.append(output_item)
     return output
 
 
@@ -227,6 +233,9 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         raise HTTPException(status_code=400, detail={"error": "input text is required"})
     model = str(body.get("model") or "gpt-image-2").strip() or "gpt-image-2"
     request_id = str(body.get("request_id") or "")
+    storage_identity = body.get("_image_storage_identity")
+    if not isinstance(storage_identity, dict):
+        storage_identity = None
     image_info = extract_response_image(body.get("input"))
     if image_info:
         image_data, mime_type = image_info
@@ -237,9 +246,10 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         prompt=prompt,
         model=model,
         size=None if images else "1:1",
-        response_format="b64_json",
+        response_format=str(body.get("response_format") or "url"),
         images=images,
         request_id=request_id,
+        image_storage_identity=storage_identity,
     ))
     yield from stream_image_response(image_outputs, prompt, model)
 

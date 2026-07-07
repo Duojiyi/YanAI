@@ -27,7 +27,25 @@ def _config(mail_config: dict) -> dict:
         "wait_timeout": float(mail_config.get("wait_timeout") or 30),
         "wait_interval": float(mail_config.get("wait_interval") or 3),
         "user_agent": str(mail_config.get("user_agent") or "Mozilla/5.0"),
+        "proxy": str(mail_config.get("proxy") or "").strip(),
     }
+
+
+def _proxy_map(conf: dict) -> dict[str, str]:
+    proxy = str(conf.get("proxy") or "").strip()
+    return {"http": proxy, "https": proxy} if proxy else {}
+
+
+def _configure_requests_session(session: requests.Session, conf: dict) -> None:
+    session.trust_env = False
+    proxies = _proxy_map(conf)
+    if proxies:
+        session.proxies.update(proxies)
+
+
+def _curl_session_kwargs(conf: dict) -> dict[str, str]:
+    proxy = str(conf.get("proxy") or "").strip()
+    return {"proxy": proxy} if proxy else {}
 
 
 def _random_mailbox_name() -> str:
@@ -181,7 +199,7 @@ class CloudflareTempMailProvider(BaseMailProvider):
         self.api_base = str(entry["api_base"]).rstrip("/")
         self.admin_password = str(entry["admin_password"]).strip()
         self.domain = entry.get("domain") or []
-        self.session = curl_requests.Session(impersonate="chrome")
+        self.session = curl_requests.Session(impersonate="chrome", **_curl_session_kwargs(conf))
 
     def _request(self, method: str, path: str, headers: dict | None = None, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200,)):
         resp = self.session.request(method.upper(), f"{self.api_base}{path}", headers={"Content-Type": "application/json", "User-Agent": self.conf["user_agent"], **(headers or {})}, params=params, json=payload, timeout=self.conf["request_timeout"], verify=False)
@@ -222,7 +240,7 @@ class TempMailLolProvider(BaseMailProvider):
         self.api_key = str(entry.get("api_key") or "").strip()
         self.domain = [str(item).strip() for item in (entry.get("domain") or []) if str(item).strip()]
         self.session = requests.Session()
-        self.session.trust_env = False
+        _configure_requests_session(self.session, conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json"})
         if self.api_key:
             self.session.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -281,7 +299,7 @@ class DuckMailProvider(BaseMailProvider):
         self.api_key = str(entry["api_key"]).strip()
         self.default_domain = str(entry.get("default_domain") or "duckmail.sbs").strip() or "duckmail.sbs"
         self.session = requests.Session()
-        self.session.trust_env = False
+        _configure_requests_session(self.session, conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json"})
 
     def _request(self, method: str, path: str, token: str = "", use_api_key: bool = False, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200, 201, 204)):
@@ -334,7 +352,7 @@ class GptMailProvider(BaseMailProvider):
         self.api_key = str(entry["api_key"]).strip()
         self.default_domain = str(entry.get("default_domain") or "").strip()
         self.session = requests.Session()
-        self.session.trust_env = False
+        _configure_requests_session(self.session, conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json", "X-API-Key": self.api_key})
 
     def _request(self, method: str, path: str, params: dict | None = None, payload: dict | None = None):
@@ -376,7 +394,7 @@ class MoeMailProvider(BaseMailProvider):
         expiry_time = entry.get("expiry_time", entry.get("expiryTime"))
         self.expiry_time = int(expiry_time) if str(expiry_time or "").strip() else 3600000
         self.session = requests.Session()
-        self.session.trust_env = False
+        _configure_requests_session(self.session, conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json", "X-API-Key": self.api_key})
 
     def _request(self, method: str, path: str, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200, 201)):

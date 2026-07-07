@@ -58,6 +58,14 @@ def is_token_invalid_error(message: str) -> bool:
     )
 
 
+def remove_invalid_image_token(access_token: str, source: str) -> bool:
+    removed = account_service.remove_invalid_token(access_token, source)
+    if not removed:
+        account = account_service.update_account(access_token, {"status": "异常", "quota": 0})
+        removed = account is not None
+    return removed
+
+
 def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
     return [base64.b64encode(data).decode("ascii") for data, _, _ in images if data]
 
@@ -71,6 +79,26 @@ def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_bytes(image_data)
     return f"{(base_url or config.base_url)}/images/{relative_dir.as_posix()}/{filename}"
+
+
+def store_image_bytes(
+    image_data: bytes,
+    base_url: str | None = None,
+    storage_identity: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    if isinstance(storage_identity, dict) and storage_identity:
+        from services.webdav_service import upload_generated_image_bytes
+
+        webdav_result = upload_generated_image_bytes(storage_identity, image_data)
+        if isinstance(webdav_result, dict) and webdav_result.get("url"):
+            webdav_url = str(webdav_result.get("url") or "")
+            return {
+                "url": webdav_url,
+                "webdav_url": webdav_url,
+                "webdav_status": "synced",
+                "webdav_synced_at": str(webdav_result.get("synced_at") or ""),
+            }
+    return {"url": save_image_bytes(image_data, base_url)}
 
 
 TEXT_CONTENT_TYPES = {"text", "input_text", "output_text"}
@@ -228,24 +256,31 @@ def format_image_result(
     base_url: str | None = None,
     created: int | None = None,
     message: str = "",
+    storage_identity: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for item in items:
+        image_data = item.get("image_data")
         b64_json = str(item.get("b64_json") or "").strip()
-        if not b64_json:
+        if not isinstance(image_data, bytes):
+            if not b64_json:
+                continue
+            image_data = base64.b64decode(b64_json)
+        if not image_data:
             continue
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
+        stored = store_image_bytes(image_data, base_url, storage_identity)
+        if not str(stored.get("url") or "").strip():
+            continue
+        next_item = {
+            **stored,
+            "revised_prompt": revised_prompt,
+        }
         if response_format == "b64_json":
-            data.append({
-                "b64_json": b64_json,
-                "url": save_image_bytes(base64.b64decode(b64_json), base_url),
-                "revised_prompt": revised_prompt,
-            })
-        else:
-            data.append({
-                "url": save_image_bytes(base64.b64decode(b64_json), base_url),
-                "revised_prompt": revised_prompt,
-            })
+            if not b64_json:
+                b64_json = base64.b64encode(image_data).decode("ascii")
+            next_item["b64_json"] = b64_json
+        data.append(next_item)
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
     if message and not data:
         result["message"] = message
@@ -260,9 +295,10 @@ class ConversationRequest:
     images: list[str] | None = None
     n: int = 1
     size: str | None = None
-    response_format: str = "b64_json"
+    response_format: str = "url"
     base_url: str | None = None
     request_id: str = ""
+    image_storage_identity: dict[str, object] | None = None
     message_as_error: bool = False
 
 
@@ -647,7 +683,7 @@ def stream_image_outputs(
     image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
     if image_urls:
         image_items = [
-            {"b64_json": base64.b64encode(image_data).decode("ascii")}
+            {"image_data": image_data}
             for image_data in backend.download_image_bytes(image_urls)
         ]
         data = format_image_result(
@@ -656,6 +692,7 @@ def stream_image_outputs(
             request.response_format,
             request.base_url,
             int(time.time()),
+            storage_identity=request.image_storage_identity,
         )["data"]
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
@@ -665,8 +702,11 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
         return
 
+    message = "image generation timed out before returning an image result"
+    if conversation_id:
+        message = f"{message} (conversation_id={conversation_id})"
     raise ImageGenerationError(
-        "image generation timed out before returning an image result",
+        message,
         status_code=504,
         error_type="server_error",
         code="image_generation_timeout",
@@ -756,8 +796,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     "request_token": token,
                     "error": last_error,
                 })
-                if not emitted_for_token and is_token_invalid_error(last_error):
-                    account_service.remove_invalid_token(token, "image_stream")
+                if is_token_invalid_error(last_error):
+                    remove_invalid_image_token(token, "image_stream")
                     continue
                 raise ImageGenerationError(last_error or "image generation failed") from exc
             finally:

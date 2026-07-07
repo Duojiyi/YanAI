@@ -105,6 +105,35 @@ def _dedupe_text(values: list[str] | tuple[str, ...] | None) -> list[str]:
     return result
 
 
+def _apply_webdav_sync_result(result: dict[str, object], sync_result: dict[str, object] | None) -> None:
+    if not isinstance(sync_result, dict):
+        return
+    sync_items = sync_result.get("items")
+    if not isinstance(sync_items, list):
+        return
+    url_by_source = {
+        _clean(item.get("source_url")): _clean(item.get("url"))
+        for item in sync_items
+        if isinstance(item, dict) and _clean(item.get("source_url")) and _clean(item.get("url"))
+    }
+    if not url_by_source:
+        return
+    data = result.get("data")
+    if not isinstance(data, list):
+        return
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        source_url = _clean(item.get("url"))
+        webdav_url = url_by_source.get(source_url)
+        if not webdav_url:
+            continue
+        item["local_url"] = source_url
+        item["url"] = webdav_url
+        item["webdav_url"] = webdav_url
+        item["webdav_status"] = "synced"
+
+
 def _record_id(record: dict[str, object]) -> str:
     return _clean(record.get("record_id") or record.get("id"))
 
@@ -472,6 +501,10 @@ def record_image_result(
         url = _clean(item.get("url"))
         if not url:
             continue
+        webdav_status = _clean(item.get("webdav_status"))
+        webdav_url = _clean(item.get("webdav_url"))
+        webdav_synced_at = _clean(item.get("webdav_synced_at"))
+        image_bytes = _int_or_zero(item.get("bytes") or item.get("size_bytes") or item.get("size"))
         record_id = uuid.uuid4().hex
         record = {
             "id": record_id,
@@ -490,6 +523,12 @@ def record_image_result(
             "created_at": now,
             "quota_cost": quota_cost if owner_user_id else 0,
         }
+        if image_bytes:
+            record["size"] = image_bytes
+        if webdav_status:
+            record["webdav_status"] = webdav_status
+            record["webdav_url"] = webdav_url or url
+            record["webdav_synced_at"] = webdav_synced_at or now
         created.append(record)
     if created:
         if isinstance(storage, ImageRecordRepository):
@@ -497,5 +536,7 @@ def record_image_result(
                 storage.insert(record)
         else:
             storage.save_image_records([*created, *[record for record in records if isinstance(record, dict)]])
-        sync_created_records_to_webdav(identity, created)
+        pending_sync = [record for record in created if _clean(record.get("webdav_status")) != "synced"]
+        if pending_sync:
+            _apply_webdav_sync_result(result, sync_created_records_to_webdav(identity, pending_sync))
     return created

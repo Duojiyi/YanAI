@@ -370,7 +370,7 @@ class LoggedCall:
     request_id: str = field(default_factory=get_current_request_id)
     started: float = field(default_factory=time.time)
 
-    async def run(self, handler, *args, sse: str = "openai"):
+    async def run(self, handler, *args, sse: str = "openai", on_stream_item=None):
         from services.protocol.conversation import ImageGenerationError
 
         try:
@@ -405,16 +405,18 @@ class LoggedCall:
             self.log("流式调用结束")
             return StreamingResponse(sender(()), media_type="text/event-stream", headers=SSE_RESPONSE_HEADERS)
         return StreamingResponse(
-            sender(self.stream(itertools.chain([first], result))),
+            sender(self.stream(itertools.chain([first], result), on_item=on_stream_item)),
             media_type="text/event-stream",
             headers=SSE_RESPONSE_HEADERS,
         )
 
-    def stream(self, items):
+    def stream(self, items, on_item=None):
         urls: list[str] = []
         failed = False
         try:
             for item in items:
+                if callable(on_item):
+                    item = on_item(item) or item
                 urls.extend(_collect_urls(item))
                 yield item
         except Exception as exc:

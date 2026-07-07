@@ -22,6 +22,7 @@ import {
   createChannel,
   deleteChannel,
   fetchChannels,
+  refreshChannelModels,
   testChannelModels,
   updateChannel,
   type Channel,
@@ -31,6 +32,7 @@ import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const DEFAULT_CHANNEL_MODELS =
   "gpt-5,gpt-5-1,gpt-5-2,gpt-5-3,gpt-5-3-mini,gpt-5-5,gpt-5-mini,gpt-image-2,codex-gpt-image-2,auto";
+const DEFAULT_CHANNEL_TIMEOUT = 300;
 
 type ChannelForm = {
   name: string;
@@ -52,7 +54,7 @@ const EMPTY_FORM: ChannelForm = {
   models: DEFAULT_CHANNEL_MODELS,
   weight: "1",
   priority: "0",
-  timeout: "60",
+  timeout: String(DEFAULT_CHANNEL_TIMEOUT),
   enabled: true,
 };
 
@@ -104,9 +106,9 @@ const CHANNEL_FIELDS: Array<{
   },
   {
     key: "timeout",
-    label: "超时",
-    description: "请求超时时间，单位秒。",
-    placeholder: "60",
+    label: "生图超时",
+    description: "外部渠道图片生成等待时间，单位秒。",
+    placeholder: String(DEFAULT_CHANNEL_TIMEOUT),
     type: "number",
   },
 ];
@@ -124,7 +126,7 @@ const channelToForm = (channel: Channel): ChannelForm => ({
   models: channel.models?.join(",") || "",
   weight: String(channel.weight ?? 1),
   priority: String(channel.priority ?? 0),
-  timeout: String(channel.timeout ?? 60),
+  timeout: String(channel.timeout ?? DEFAULT_CHANNEL_TIMEOUT),
   enabled: channel.enabled,
 });
 
@@ -176,6 +178,7 @@ function ChannelsContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [savingChannelId, setSavingChannelId] = useState<string | null>(null);
+  const [refreshingChannelId, setRefreshingChannelId] = useState<string | null>(null);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, ChannelModelTestResult>>({});
   const [form, setForm] = useState<ChannelForm>(resetForm);
@@ -239,7 +242,7 @@ function ChannelsContent() {
         models: form.models,
         weight: toNumber(form.weight, 1),
         priority: toNumber(form.priority, 0),
-        timeout: toNumber(form.timeout, 60),
+        timeout: toNumber(form.timeout, DEFAULT_CHANNEL_TIMEOUT),
         enabled: form.enabled,
       });
       setItems(data.items);
@@ -281,7 +284,8 @@ function ChannelsContent() {
   const openModelTestDialog = (channel: Channel) => {
     const models = uniqueModels(channel.models);
     setModelTestChannel(channel);
-    setSelectedTestModels(models);
+    const preferredModel = models.find((model) => model === "gpt-image-2") ?? models.find((model) => model === "codex-gpt-image-2") ?? models[0];
+    setSelectedTestModels(preferredModel ? [preferredModel] : []);
   };
 
   const toggleTestModel = (model: string, checked: boolean) => {
@@ -305,7 +309,7 @@ function ChannelsContent() {
       const result = await testChannelModels(channel.id, selectedTestModels);
       setTestResults((current) => ({ ...current, [channel.id]: result }));
       if (result.ok) {
-        toast.success(`${channel.name} 模型测试通过：${result.tested_models.length} 个模型，${result.latency_ms}ms`);
+        toast.success(`${channel.name} 模型测试通过：${result.passed_models?.length ?? result.tested_models.length} 个模型，${result.latency_ms}ms`);
         setModelTestChannel(null);
       } else {
         toast.error(result.error || `${channel.name} 模型测试失败`);
@@ -314,6 +318,19 @@ function ChannelsContent() {
       toast.error(error instanceof Error ? error.message : "模型测试失败");
     } finally {
       setTestingChannelId(null);
+    }
+  };
+
+  const handleRefreshModels = async (channel: Channel) => {
+    setRefreshingChannelId(channel.id);
+    try {
+      const data = await refreshChannelModels(channel.id);
+      setItems((current) => current.map((item) => (item.id === channel.id ? data.channel : item)));
+      toast.success(`${channel.name} 已获取 ${data.models.length} 个模型`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "获取模型列表失败");
+    } finally {
+      setRefreshingChannelId(null);
     }
   };
 
@@ -336,7 +353,7 @@ function ChannelsContent() {
             models: editForm.models,
             weight: toNumber(editForm.weight, 1),
             priority: toNumber(editForm.priority, 0),
-            timeout: toNumber(editForm.timeout, 60),
+            timeout: toNumber(editForm.timeout, DEFAULT_CHANNEL_TIMEOUT),
             enabled: editForm.enabled,
           };
       const data = await updateChannel(editingChannel.id, payload);
@@ -374,7 +391,7 @@ function ChannelsContent() {
               <Plus className="size-4 text-rose-500" />
               新增 OpenAI 图片兼容渠道
             </div>
-            <div className="text-xs text-stone-400">填写 OpenAI 兼容地址后，可在列表中测试模型接口。</div>
+            <div className="text-xs text-stone-400">填写 OpenAI 兼容地址后，可获取模型列表或测试生图。</div>
           </div>
           <div className="grid gap-3 lg:grid-cols-[1fr_1.4fr_1.15fr]">
             {PRIMARY_FIELDS.map((field) => (
@@ -428,7 +445,7 @@ function ChannelsContent() {
 
       <Card className="overflow-hidden rounded-lg border-white/80 bg-white/80 shadow-sm">
         <CardContent className="p-0">
-          <div className="hidden border-b border-rose-50 px-5 py-3 text-xs font-semibold text-stone-500 lg:grid lg:grid-cols-[1.05fr_1.4fr_1.6fr_1fr_90px_230px] lg:items-center">
+          <div className="hidden border-b border-rose-50 px-5 py-3 text-xs font-semibold text-stone-500 lg:grid lg:grid-cols-[1.05fr_1.3fr_1.5fr_1fr_90px_320px] lg:items-center">
             <div>名称 / 类型</div>
             <div>Base URL</div>
             <div>模型</div>
@@ -446,7 +463,7 @@ function ChannelsContent() {
               return (
                 <div
                   key={channel.id}
-                  className="grid gap-3 border-b border-rose-50 px-5 py-4 text-sm last:border-0 lg:grid-cols-[1.05fr_1.4fr_1.6fr_1fr_90px_230px] lg:items-center"
+                  className="grid gap-3 border-b border-rose-50 px-5 py-4 text-sm last:border-0 lg:grid-cols-[1.05fr_1.3fr_1.5fr_1fr_90px_320px] lg:items-center"
                 >
                   <div>
                     <div className="font-medium text-stone-900">{channel.name}</div>
@@ -461,7 +478,7 @@ function ChannelsContent() {
                   <div className="flex flex-wrap gap-1.5 text-xs text-stone-500">
                     <Badge variant="outline">权重 {channel.weight}</Badge>
                     <Badge variant="outline">优先级 {channel.priority}</Badge>
-                    <Badge variant="outline">{channel.timeout ? `${channel.timeout}s` : "无超时"}</Badge>
+                    <Badge variant="outline">生图超时 {channel.timeout ? `${channel.timeout}s` : "未设置"}</Badge>
                   </div>
                   <Badge variant={channel.enabled ? "success" : "secondary"} className="w-fit">
                     {channel.enabled ? "启用" : "禁用"}
@@ -477,6 +494,16 @@ function ChannelsContent() {
                         onClick={() => openEditDialog(channel)}
                       >
                         <Pencil className="size-4" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 rounded-lg border-rose-100 bg-white"
+                        disabled={refreshingChannelId === channel.id}
+                        onClick={() => void handleRefreshModels(channel)}
+                      >
+                        {refreshingChannelId === channel.id ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                        获取
                       </Button>
                       <Button
                         variant="outline"
@@ -519,14 +546,20 @@ function ChannelsContent() {
                             ? "flex min-w-0 items-center gap-1.5 text-xs text-emerald-700"
                             : "flex min-w-0 items-center gap-1.5 text-xs text-rose-600"
                         }
-                        title={testResult.ok ? testResult.tested_models.join(", ") : testResult.missing_models.join(", ") || testResult.error}
+                        title={
+                          testResult.ok
+                            ? (testResult.passed_models || testResult.tested_models).join(", ")
+                            : testResult.results?.map((item) => `${item.model}: ${item.error}`).join("; ") ||
+                              testResult.missing_models.join(", ") ||
+                              testResult.error
+                        }
                       >
                         {testResult.ok ? <CheckCircle2 className="size-3.5 shrink-0" /> : <XCircle className="size-3.5 shrink-0" />}
                         <span className="truncate">
                           {testResult.ok
-                            ? `${testResult.tested_models.length} 个选中模型可用 · ${testResult.latency_ms}ms`
-                            : testResult.missing_models.length > 0
-                              ? `缺失 ${testResult.missing_models.join(", ")}`
+                            ? `${testResult.passed_models?.length ?? testResult.tested_models.length} 个模型生图通过 · ${testResult.latency_ms}ms`
+                            : (testResult.failed_models?.length || testResult.missing_models.length) > 0
+                              ? `失败 ${(testResult.failed_models || testResult.missing_models).join(", ")}`
                               : testResult.error || "模型测试失败"}
                         </span>
                       </div>
@@ -542,7 +575,7 @@ function ChannelsContent() {
       <Dialog open={Boolean(modelTestChannel)} onOpenChange={(open) => (!open ? setModelTestChannel(null) : null)}>
         <DialogContent showCloseButton={false} className="flex max-h-[86vh] w-[min(94vw,680px)] max-w-none flex-col overflow-hidden rounded-lg p-0">
           <DialogHeader className="border-b border-rose-100 px-5 pt-5 pb-4 sm:px-6">
-            <DialogTitle>选择测试模型</DialogTitle>
+            <DialogTitle>选择生图测试模型</DialogTitle>
             <DialogDescription className="leading-6 text-stone-500">
               {modelTestChannel ? `${modelTestChannel.name} · ${channelTypeLabel(modelTestChannel)}` : "选择要测试的模型"}
             </DialogDescription>

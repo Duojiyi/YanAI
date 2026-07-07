@@ -93,6 +93,44 @@ class ModelServiceTest(unittest.TestCase):
             self.assertFalse(service.is_internal_pool_enabled())
             self.assertFalse(service.list_channels()[0]["enabled"])
 
+    def test_internal_pool_timeout_is_configurable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
+            config_store = FakeConfigStore()
+            config_store.data["image_generation_poll_timeout_seconds"] = 240
+            service = ChannelService(storage, config_store)
+
+            self.assertEqual(service.get_channel("internal_pool")["timeout"], 240)
+
+            item = service.update_channel("internal_pool", {"timeout": 420})
+
+            self.assertIsNotNone(item)
+            self.assertEqual(item["timeout"], 420)
+            self.assertEqual(config_store.data["image_generation_poll_timeout_seconds"], 420)
+            self.assertEqual(service.list_channels()[0]["timeout"], 420)
+
+    def test_internal_pool_routing_parameters_are_configurable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
+            config_store = FakeConfigStore()
+            config_store.data["internal_pool_weight"] = 2
+            config_store.data["internal_pool_priority"] = -50
+            service = ChannelService(storage, config_store)
+
+            channel = service.get_channel("internal_pool")
+            self.assertEqual(channel["weight"], 2)
+            self.assertEqual(channel["priority"], -50)
+
+            item = service.update_channel("internal_pool", {"weight": 4, "priority": 20})
+
+            self.assertIsNotNone(item)
+            self.assertEqual(item["weight"], 4)
+            self.assertEqual(item["priority"], 20)
+            self.assertEqual(config_store.data["internal_pool_weight"], 4)
+            self.assertEqual(config_store.data["internal_pool_priority"], 20)
+            self.assertEqual(service.list_channels()[0]["weight"], 4)
+            self.assertEqual(service.list_channels()[0]["priority"], 20)
+
     def test_channel_model_test_generates_without_persisting_models(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")

@@ -33,6 +33,8 @@ import { useAuthGuard } from "@/lib/use-auth-guard";
 const DEFAULT_CHANNEL_MODELS =
   "gpt-5,gpt-5-1,gpt-5-2,gpt-5-3,gpt-5-3-mini,gpt-5-5,gpt-5-mini,gpt-image-2,codex-gpt-image-2,auto";
 const DEFAULT_CHANNEL_TIMEOUT = 300;
+const DEFAULT_INTERNAL_POOL_WEIGHT = 1;
+const DEFAULT_INTERNAL_POOL_PRIORITY = -1000;
 
 type ChannelForm = {
   name: string;
@@ -107,7 +109,7 @@ const CHANNEL_FIELDS: Array<{
   {
     key: "timeout",
     label: "生图超时",
-    description: "外部渠道图片生成等待时间，单位秒。",
+    description: "图片生成等待时间，单位秒。",
     placeholder: String(DEFAULT_CHANNEL_TIMEOUT),
     type: "number",
   },
@@ -124,8 +126,8 @@ const channelToForm = (channel: Channel): ChannelForm => ({
   base_url: channel.base_url || "",
   api_key: "",
   models: channel.models?.join(",") || "",
-  weight: String(channel.weight ?? 1),
-  priority: String(channel.priority ?? 0),
+  weight: String(channel.weight ?? DEFAULT_INTERNAL_POOL_WEIGHT),
+  priority: String(channel.priority ?? (channel.id === "internal_pool" ? DEFAULT_INTERNAL_POOL_PRIORITY : 0)),
   timeout: String(channel.timeout ?? DEFAULT_CHANNEL_TIMEOUT),
   enabled: channel.enabled,
 });
@@ -345,7 +347,12 @@ function ChannelsContent() {
     try {
       const isInternal = editingChannel.id === "internal_pool";
       const payload = isInternal
-        ? { enabled: editForm.enabled }
+        ? {
+            enabled: editForm.enabled,
+            weight: toNumber(editForm.weight, DEFAULT_INTERNAL_POOL_WEIGHT),
+            priority: toNumber(editForm.priority, DEFAULT_INTERNAL_POOL_PRIORITY),
+            timeout: toNumber(editForm.timeout, DEFAULT_CHANNEL_TIMEOUT),
+          }
         : {
             name: editForm.name.trim(),
             base_url: editForm.base_url.trim(),
@@ -660,9 +667,25 @@ function ChannelsContent() {
             </label>
 
             {isEditingInternal ? (
-              <div className="space-y-2 rounded-lg border border-rose-100 bg-white/70 p-4 text-sm">
-                <div className="font-semibold text-stone-800">内置模型</div>
-                <div className="leading-6 text-stone-500">{editForm.models}</div>
+              <div className="grid gap-4">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {ROUTING_FIELDS.map((field) => (
+                    <div key={field.key} className="space-y-1.5">
+                      <FieldCaption field={field} />
+                      <Input
+                        type={field.type || "text"}
+                        value={editForm[field.key]}
+                        onChange={(event) => updateEditField(field.key, event.target.value)}
+                        placeholder={field.placeholder}
+                        className="h-10 rounded-xl border-rose-100 bg-white"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-2 rounded-lg border border-rose-100 bg-white/70 p-4 text-sm">
+                  <div className="font-semibold text-stone-800">内置模型</div>
+                  <div className="leading-6 text-stone-500">{editForm.models}</div>
+                </div>
               </div>
             ) : (
               <div className="grid gap-4 sm:grid-cols-2">

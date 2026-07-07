@@ -20,8 +20,14 @@ from utils.helper import IMAGE_MODELS
 from utils.model_catalog import DEFAULT_INTERNAL_MODELS
 
 INTERNAL_POOL_ENABLED_KEY = "internal_pool_enabled"
+INTERNAL_POOL_TIMEOUT_KEY = "image_generation_poll_timeout_seconds"
+INTERNAL_POOL_WEIGHT_KEY = "internal_pool_weight"
+INTERNAL_POOL_PRIORITY_KEY = "internal_pool_priority"
 PERSONAL_CHANNEL_ID_PREFIX = "personal_image_channel"
 DEFAULT_EXTERNAL_CHANNEL_TIMEOUT = 300
+DEFAULT_INTERNAL_POOL_TIMEOUT = 300
+DEFAULT_INTERNAL_POOL_WEIGHT = 1
+DEFAULT_INTERNAL_POOL_PRIORITY = -1000
 MODEL_TEST_PROMPT = "Generate a simple 1:1 test image with a small green check mark centered on a white background."
 MODEL_TEST_SIZE = "1:1"
 
@@ -150,6 +156,16 @@ def _channel_timeout(channel: dict[str, object]) -> int:
         return DEFAULT_EXTERNAL_CHANNEL_TIMEOUT
 
 
+def _data_url_base64(value: object) -> str:
+    text = _clean(value)
+    if not text.lower().startswith("data:image/"):
+        return ""
+    header, separator, payload = text.partition(",")
+    if not separator or ";base64" not in header.lower():
+        return ""
+    return payload.strip()
+
+
 class ChannelService:
     def __init__(self, storage: StorageBackend | RepositoryProvider, config_store=None):
         self.repositories = storage if isinstance(storage, RepositoryProvider) else None
@@ -245,6 +261,33 @@ class ChannelService:
     def is_internal_pool_enabled(self) -> bool:
         return _bool(self.config_store.get().get(INTERNAL_POOL_ENABLED_KEY), True)
 
+    def _internal_pool_timeout(self) -> int:
+        raw = getattr(self.config_store, "image_generation_poll_timeout_seconds", None)
+        if raw is None:
+            raw = self.config_store.get().get(INTERNAL_POOL_TIMEOUT_KEY)
+        try:
+            return max(60, min(900, int(raw or DEFAULT_INTERNAL_POOL_TIMEOUT)))
+        except (TypeError, ValueError):
+            return DEFAULT_INTERNAL_POOL_TIMEOUT
+
+    def _internal_pool_weight(self) -> int:
+        raw = getattr(self.config_store, "internal_pool_weight", None)
+        if raw is None:
+            raw = self.config_store.get().get(INTERNAL_POOL_WEIGHT_KEY)
+        try:
+            return max(1, int(raw or DEFAULT_INTERNAL_POOL_WEIGHT))
+        except (TypeError, ValueError):
+            return DEFAULT_INTERNAL_POOL_WEIGHT
+
+    def _internal_pool_priority(self) -> int:
+        raw = getattr(self.config_store, "internal_pool_priority", None)
+        if raw is None:
+            raw = self.config_store.get().get(INTERNAL_POOL_PRIORITY_KEY)
+        try:
+            return int(raw if raw is not None else DEFAULT_INTERNAL_POOL_PRIORITY)
+        except (TypeError, ValueError):
+            return DEFAULT_INTERNAL_POOL_PRIORITY
+
     def _image_model_mappings(self) -> dict[str, str]:
         defaults = {
             "gpt-image-2": "gpt-5-5",
@@ -293,9 +336,9 @@ class ChannelService:
             "type": "internal_pool",
             "base_url": "",
             "models": list(DEFAULT_INTERNAL_MODELS),
-            "weight": 1,
-            "priority": -1000,
-            "timeout": 0,
+            "weight": self._internal_pool_weight(),
+            "priority": self._internal_pool_priority(),
+            "timeout": self._internal_pool_timeout(),
             "enabled": self.is_internal_pool_enabled(),
             "has_api_key": False,
             "created_at": None,
@@ -449,8 +492,35 @@ class ChannelService:
     def update_channel(self, channel_id: str, updates: dict[str, object]) -> dict[str, object] | None:
         normalized_id = _clean(channel_id)
         if normalized_id == "internal_pool":
+            config_updates: dict[str, object] = {}
             if "enabled" in updates:
-                self.config_store.update({INTERNAL_POOL_ENABLED_KEY: _bool(updates.get("enabled"), True)})
+                config_updates[INTERNAL_POOL_ENABLED_KEY] = _bool(updates.get("enabled"), True)
+            if "timeout" in updates:
+                try:
+                    config_updates[INTERNAL_POOL_TIMEOUT_KEY] = max(
+                        60,
+                        min(900, int(updates.get("timeout") or DEFAULT_INTERNAL_POOL_TIMEOUT)),
+                    )
+                except (TypeError, ValueError):
+                    config_updates[INTERNAL_POOL_TIMEOUT_KEY] = DEFAULT_INTERNAL_POOL_TIMEOUT
+            if "weight" in updates:
+                try:
+                    config_updates[INTERNAL_POOL_WEIGHT_KEY] = max(
+                        1,
+                        int(updates.get("weight") or DEFAULT_INTERNAL_POOL_WEIGHT),
+                    )
+                except (TypeError, ValueError):
+                    config_updates[INTERNAL_POOL_WEIGHT_KEY] = DEFAULT_INTERNAL_POOL_WEIGHT
+            if "priority" in updates:
+                try:
+                    raw_priority = updates.get("priority")
+                    config_updates[INTERNAL_POOL_PRIORITY_KEY] = int(
+                        raw_priority if raw_priority is not None else DEFAULT_INTERNAL_POOL_PRIORITY
+                    )
+                except (TypeError, ValueError):
+                    config_updates[INTERNAL_POOL_PRIORITY_KEY] = DEFAULT_INTERNAL_POOL_PRIORITY
+            if config_updates:
+                self.config_store.update(config_updates)
             self._invalidate_cache()
             return self._internal_channel()
         with self._lock:
@@ -954,16 +1024,26 @@ class ChannelService:
         data = payload.get("data")
         if not isinstance(data, list):
             raise RuntimeError("channel response missing data")
-        b64_items = [item for item in data if isinstance(item, dict) and item.get("b64_json")]
-        url_items = [item for item in data if isinstance(item, dict) and item.get("url") and not item.get("b64_json")]
+        encoded_items: list[dict[str, Any]] = []
+        url_items: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            b64_json = _clean(item.get("b64_json"))
+            data_url_b64 = _data_url_base64(item.get("url"))
+            if b64_json or data_url_b64:
+                encoded_items.append({**item, "b64_json": b64_json or data_url_b64})
+                continue
+            if item.get("url"):
+                url_items.append(item)
         storage_identity = original_payload.get("_image_storage_identity")
         if not isinstance(storage_identity, dict):
             storage_identity = None
-        if b64_items:
+        if encoded_items:
             from services.protocol.conversation import format_image_result
 
             result = format_image_result(
-                b64_items,
+                encoded_items,
                 _clean(original_payload.get("prompt")),
                 _clean(original_payload.get("response_format")) or "url",
                 _clean(original_payload.get("base_url")) or None,
@@ -979,8 +1059,9 @@ class ChannelService:
 
             for item in data:
                 if isinstance(item, str):
+                    b64_json = _data_url_base64(item) or _clean(item)
                     converted = format_image_result(
-                        [{"b64_json": item}],
+                        [{"b64_json": b64_json}],
                         _clean(original_payload.get("prompt")),
                         _clean(original_payload.get("response_format")) or "url",
                         _clean(original_payload.get("base_url")) or None,

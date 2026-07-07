@@ -218,6 +218,20 @@ class ConfigStore:
         return _bool(self._get_config_value("internal_pool_enabled"), True)
 
     @property
+    def internal_pool_weight(self) -> int:
+        try:
+            return max(1, int(self._get_config_value("internal_pool_weight", 1)))
+        except (TypeError, ValueError):
+            return 1
+
+    @property
+    def internal_pool_priority(self) -> int:
+        try:
+            return int(self._get_config_value("internal_pool_priority", -1000))
+        except (TypeError, ValueError):
+            return -1000
+
+    @property
     def auto_remove_invalid_accounts(self) -> bool:
         return _bool(self._get_config_value("auto_remove_invalid_accounts"), False)
 
@@ -412,6 +426,8 @@ class ConfigStore:
         data["image_generation_poll_timeout_seconds"] = self.image_generation_poll_timeout_seconds
         data["image_retention_days"] = self.image_retention_days
         data["internal_pool_enabled"] = self.internal_pool_enabled
+        data["internal_pool_weight"] = self.internal_pool_weight
+        data["internal_pool_priority"] = self.internal_pool_priority
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["log_levels"] = self.log_levels

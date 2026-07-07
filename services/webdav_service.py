@@ -478,8 +478,8 @@ def upload_generated_image_bytes(
 ) -> dict[str, object] | None:
     if not image_data:
         return None
-    scope = "user" if _clean(identity.get("role")) == "user" else "admin"
-    user_id = _clean(identity.get("id")) if scope == "user" else ""
+    scope = "admin"
+    user_id = ""
     webdav_config = get_webdav_config(scope, user_id=user_id, include_password=True)
     if not _bool(webdav_config.get("enabled")):
         return None
@@ -509,8 +509,8 @@ def upload_generated_image_bytes(
 def sync_created_records_to_webdav(identity: dict[str, object], records: list[dict[str, object]]) -> dict[str, object] | None:
     if not records:
         return None
-    scope = "user" if _clean(identity.get("role")) == "user" else "admin"
-    user_id = _clean(identity.get("id")) if scope == "user" else ""
+    scope = "admin"
+    user_id = ""
     webdav_config = get_webdav_config(scope, user_id=user_id, include_password=True)
     if not _bool(webdav_config.get("enabled")):
         return None
